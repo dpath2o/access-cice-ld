@@ -1,0 +1,546 @@
+From 8d628d91398bda70af47b9edff5bb51751f88ec8 Mon Sep 17 00:00:00 2001
+From: dpath2o <dpath2o@mac.com>
+Date: Mon, 17 Nov 2025 09:58:42 +1100
+Subject: [PATCH 22/34] minor updates to comments in EVP and shared and grid
+
+---
+ cicecore/cicedyn/dynamics/ice_dyn_evp.F90    |  37 +++-
+ cicecore/cicedyn/dynamics/ice_dyn_shared.F90 |  78 ++++---
+ cicecore/cicedyn/infrastructure/ice_grid.F90 | 217 +++++++++++--------
+ 3 files changed, 197 insertions(+), 135 deletions(-)
+
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90 b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+index 030c8a6..c38ccf2 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+@@ -154,7 +154,7 @@ subroutine init_evp
+       !------------------------------------------------
+       ! coastal drag masking and form factor construction
+       if (coastal_drag .and. create_form_factors) then
+-         call build_F2_form_factors_cgrid(test_case=.true.)   ! perimeter fallback for your 12×12 ocean box
++         call build_F2_form_factors_cgrid(test_case=.true.)
+       endif
+ 
+       if (evp_algorithm == "shared_mem_1d" ) then
+@@ -350,7 +350,7 @@ subroutine evp (dt)
+ 
+       character(len=*), parameter :: subname = '(evp)'
+ 
+-      integer (kind=int_kind) :: nE, nN, nU
++      integer (kind=int_kind) :: nE, nN, nU, nKux, nKuy
+ 
+       call ice_timer_start(timer_dynamics) ! dynamics
+ 
+@@ -800,14 +800,14 @@ subroutine evp (dt)
+             !$OMP PARALLEL DO PRIVATE(iblk) SCHEDULE(runtime)
+             do iblk = 1, nblocks
+                call coastal_drag_stress_factor(nx_block          , ny_block,         &
+-                                               icellE  (iblk)    ,                   &
+-                                               indxEi  (:,iblk)  , indxEj(:,iblk),   &
++                                               ! icellE  (iblk)    ,                   &
++                                               ! indxEi  (:,iblk)  , indxEj(:,iblk),   &
+                                                emass   (:,:,iblk),                   &
+                                                KuE     (:,:,iblk),                   &
+                                                F2E(:,:,iblk)                         )
+                call coastal_drag_stress_factor(nx_block          , ny_block,         &
+-                                               icellN  (iblk)    ,                   &
+-                                               indxNi  (:,iblk)  , indxNj(:,iblk),   &
++                                               ! icellN  (iblk)    ,                   &
++                                               ! indxNi  (:,iblk)  , indxNj(:,iblk),   &
+                                                nmass   (:,:,iblk),                   &
+                                                KuN     (:,:,iblk),                   &
+                                                F2N(:,:,iblk)                         )
+@@ -1112,7 +1112,8 @@ subroutine evp (dt)
+                               uvelE_init(:,:,iblk),                       &
+                               uvelE     (:,:,iblk), vvelE     (:,:,iblk), &
+                               TbE       (:,:,iblk),                       &
+-                              KuxE      (:,:,iblk), KuE       (:,:,iblk))
++                              KuxE      (:,:,iblk), KuyE      (:,:,iblk), &
++                              KuE       (:,:,iblk))
+ 
+                 call stepv_C (nx_block,             ny_block,             & ! v, N point
+                               icellN        (iblk), Cdn_ocnN  (:,:,iblk), &
+@@ -1125,7 +1126,8 @@ subroutine evp (dt)
+                               vvelN_init(:,:,iblk),                       &
+                               uvelN     (:,:,iblk), vvelN     (:,:,iblk), &
+                               TbN       (:,:,iblk),                       &
+-                              KuyN      (:,:,iblk), KuN       (:,:,iblk))
++                              KuxN      (:,:,iblk), KuyN      (:,:,iblk), &
++                              KuN       (:,:,iblk))
+             enddo
+             !$OMP END PARALLEL DO
+ 
+@@ -1133,6 +1135,8 @@ subroutine evp (dt)
+             if (ksub == ndte) then
+                nE = count(F2E /= c0)
+                nN = count(F2N /= c0)
++               nKux = count(KuxE /= c0)
++               nKuy = count(KuyN /= c0)
+                write(nu_diag,9000) 'after stepu/v_C calls F2E min/max/avg =', &
+                   minval(F2E, mask=F2E/=c0), maxval(F2E, mask=F2E/=c0), &
+                   sum(F2E, mask=F2E/=c0)/real(max(1,nE), dbl_kind)
+@@ -1145,12 +1149,21 @@ subroutine evp (dt)
+                write(nu_diag,9000) 'after stepu/v_C calls KuN min/max/avg =', &
+                   minval(KuN, mask=KuN/=c0), maxval(KuN, mask=KuN/=c0), &
+                   sum(KuN, mask=KuN/=c0)/real(max(1,nN), dbl_kind)
++               if (nKux > 0) then
+                write(nu_diag,9000) 'after stepu/v_C calls KuxE min/max/avg =', &
+-                  minval(KuxE, mask=KuxE/=c0), maxval(KuxE, mask=KuxE/=c0), &
+-                  sum(KuxE, mask=KuxE/=c0)/real(max(1,nE), dbl_kind)
++                     minval(KuxE, mask=KuxE/=c0), maxval(KuxE, mask=KuxE/=c0), &
++                     sum(KuxE, mask=KuxE/=c0)/real(nKux, dbl_kind)
++               else
++               write(nu_diag,'(a)') 'after stepu/v_C calls KuxE: all zero.'
++               end if
++
++               if (nKuy > 0) then
+                write(nu_diag,9000) 'after stepu/v_C calls KuyN min/max/avg =', &
+-                  minval(KuyN, mask=KuyN/=c0), maxval(KuyN, mask=KuyN/=c0), &
+-                  sum(KuyN, mask=KuyN/=c0)/real(max(1,nN), dbl_kind)
++                     minval(KuyN, mask=KuyN/=c0), maxval(KuyN, mask=KuyN/=c0), &
++                     sum(KuyN, mask=KuyN/=c0)/real(nKuy, dbl_kind)
++               else
++               write(nu_diag,'(a)') 'after stepu/v_C calls KuyN: all zero.'
++               end if
+             end if
+             ! ----------------------------------------------------------------------
+ 
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90 b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+index 2755102..765c00e 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+@@ -247,7 +247,7 @@ subroutine alloc_dyn_shared
+          !---------------------------------------------------------
+          ! Allocate and initialise coastal drag coefficient fields
+          !---------------------------------------------------------
+-         if (coastal_drag) then
++         !if (coastal_drag) then
+             allocate( &
+                      KuU  (nx_block,ny_block,max_blocks), &
+                      KuE  (nx_block,ny_block,max_blocks), &
+@@ -260,7 +260,7 @@ subroutine alloc_dyn_shared
+                      KuyN (nx_block,ny_block,max_blocks), &
+                      stat=ierr)
+             if (ierr/=0) call abort_ice(subname//': Out of memory')  
+-         end if
++         !end if
+       end if
+ 
+       end subroutine alloc_dyn_shared
+@@ -385,7 +385,7 @@ subroutine init_dyn_shared (dt)
+             stresspU  (i,j,iblk) = c0
+             stressmU  (i,j,iblk) = c0
+             stress12U (i,j,iblk) = c0
+-            if (coastal_drag) then
++            ! if (coastal_drag) then
+                KuU  (i,j,iblk) = c0
+                KuE  (i,j,iblk) = c0
+                KuN  (i,j,iblk) = c0
+@@ -395,7 +395,7 @@ subroutine init_dyn_shared (dt)
+                KuyE (i,j,iblk) = c0
+                KuxN (i,j,iblk) = c0
+                KuyN (i,j,iblk) = c0            
+-            end if
++            !end if
+          endif
+ 
+          if (kdyn == 1) then
+@@ -1115,7 +1115,8 @@ subroutine stepu_C (nx_block,   ny_block, &
+                           uvel_init,            &
+                           uvel,       vvel,     &
+                           Tb,                   &
+-                          Kux,        Ku        )
++                          Kux,        Kuy,      &
++                          Ku        )
+ 
+       integer (kind=int_kind), intent(in) :: &
+          nx_block, ny_block, & ! block dimensions
+@@ -1143,7 +1144,7 @@ subroutine stepu_C (nx_block,   ny_block, &
+       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
+          uvel    , & ! x-component of velocity (m/s)
+          taubx   , & ! seabed stress, x-direction (N/m^2)
+-         Kux         ! coastal (lateral) stress, x-direction (N/m^2)
++         Kux, Kuy    ! coastal (lateral) stress, x/y-directions (N/m^2)
+ 
+       ! local variables
+ 
+@@ -1198,9 +1199,11 @@ subroutine stepu_C (nx_block,   ny_block, &
+          taubx(i,j) = -uvel(i,j)*Cb
+ 
+          ! calculate the coastal (lateral) drag stress component for output
+-         Kux(i,j) = -uvel(i,j)*Cl
++         Kux(i,j) = -uvel(i,j)*Cl   ! normal-to-wall at E
++         Kuy(i,j) = -vvel(i,j)*Cl   ! tangential-to-wall at E
+ 
+       enddo                     ! ij
++
+       end subroutine stepu_C
+ 
+ !=======================================================================
+@@ -1217,7 +1220,8 @@ subroutine stepv_C (nx_block,   ny_block, &
+                           vvel_init,            &
+                           uvel,       vvel,     &
+                           Tb,                   &
+-                          Kuy,         Ku       )
++                          Kux,        Kuy,      &
++                          Ku       )
+ 
+       integer (kind=int_kind), intent(in) :: &
+          nx_block, ny_block, & ! block dimensions
+@@ -1245,7 +1249,7 @@ subroutine stepv_C (nx_block,   ny_block, &
+       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
+          vvel    , & ! y-component of velocity (m/s)
+          tauby   , & ! seabed stress, y-direction (N/m^2)
+-         Kuy         ! coastal (lateral) stress, y-direction (N/m^2)
++         Kux, Kuy    ! coastal (lateral) stress, x/y-directions (N/m^2)
+ 
+       ! local variables
+ 
+@@ -1300,7 +1304,8 @@ subroutine stepv_C (nx_block,   ny_block, &
+          tauby(i,j) = -vvel(i,j)*Cb
+ 
+          ! calculate the coastal (lateral) drag stress component for output
+-         Kuy(i,j) = -vvel(i,j)*Cl
++         Kux(i,j) = -uvel(i,j)*Cl   ! tangential-to-wall at N 
++         Kuy(i,j) = -vvel(i,j)*Cl   ! normal-to-wall at N
+ 
+       enddo                     ! ij
+ 
+@@ -1401,8 +1406,8 @@ end subroutine dyn_finish
+ !
+ ! authors: dpath2o
+       subroutine coastal_drag_stress_factor(nx_block, ny_block, &
+-                                            icell   ,           &
+-                                            ind_i   , ind_j   , &
++                                            ! icell   ,           &
++                                            ! ind_i   , ind_j   , &
+                                             imass   ,           &
+                                             Ku      ,           &
+                                             F2)
+@@ -1413,28 +1418,28 @@ subroutine coastal_drag_stress_factor(nx_block, ny_block, &
+          implicit none
+ 
+          integer(kind=int_kind), intent(in) :: &
+-            nx_block, ny_block, & ! block dimensions
+-            icell                 ! total count when ice[E|N]mask is true
++            nx_block, ny_block!, & ! block dimensions
++            !icell                 ! total count when ice[E|N]mask is true
+ 
+-         integer(kind=int_kind), dimension(nx_block*ny_block), intent(in) :: &
+-            ind_i, & ! compressed index in i-direction
+-            ind_j    ! compressed index in j-direction
++         ! integer(kind=int_kind), dimension(nx_block*ny_block), intent(in) :: &
++         !    ind_i, & ! compressed index in i-direction
++         !    ind_j    ! compressed index in j-direction
+ 
+-         real(kind=dbl_kind), dimension(nx_block*ny_block), intent(in) :: &
++         real(kind=dbl_kind), dimension(nx_block,ny_block), intent(in) :: &
+             imass , & ! mass of n-cell/dt (kg/m^2 s)
+             F2        ! coastline form factor (drag coefficient); unitless
+ 
+-         real(kind=dbl_kind), dimension(nx_block*ny_block), intent(inout) :: &
++         real(kind=dbl_kind), dimension(nx_block,ny_block), intent(inout) :: &
+             Ku ! coastline stress form factor; kg/m^2 * _ * m/s^2 = kg/(m*s^2) = Pascal (Pa)
+ 
+-         integer (kind=int_kind) :: &
+-            i, j, ij ! subroutine indices
++         ! integer (kind=int_kind) :: &
++         !    i, j, ij ! subroutine indices
+ 
+-         ! gauard  
+-         if (icell <= 0) then
+-            if (my_task==master_task) write(nu_diag,'(a)') 'CDP: icell==0; Ku unchanged.'
+-            return
+-         end if
++         ! ! gauard  
++         ! if (icell <= 0) then
++         !    if (my_task==master_task) write(nu_diag,'(a)') 'CDP: icell==0; Ku unchanged.'
++         !    return
++         ! end if
+ 
+          ! subroutine diagnostics
+          if (my_task==master_task) then
+@@ -1443,21 +1448,22 @@ subroutine coastal_drag_stress_factor(nx_block, ny_block, &
+                minval(F2, mask=F2>c0), maxval(F2, mask=F2>c0)
+             write(nu_diag,'(a,2(1pe12.4,1x))') 'CDP: imass@F2>0 min/max =', &
+                minval(imass , mask=F2>c0), maxval(imass , mask=F2>c0)
+-            write(nu_diag,'(a,i0)') 'CDP: icell =', icell
++            ! write(nu_diag,'(a,i0)') 'CDP: icell =', icell
+          end if
+ 
+          ! stress form factor
+-         do ij = 1, icell
+-            i       = ind_i(ij)
+-            j       = ind_j(ij)
+-            Ku(i,j) = imass(i,j) * F2(i,j) * Cs 
+-         end do
++         ! do ij = 1, icell
++         !    i       = ind_i(ij)
++         !    j       = ind_j(ij)
++         !    if (F2(i,j) > c0) Ku(i,j) = imass(i,j) * F2(i,j) * Cs
++         ! end do
++         Ku = imass * F2 * Cs
+ 
+          ! subroutine diagnostics
+-         if (my_task==master_task) then
+-            write(nu_diag,'(a,2(1pe12.4,1x),a,1pe12.4)') 'CDP: Ku@F2>0 min/max/avg =', &
+-            minval(Ku, mask=F2>c0), maxval(Ku, mask=F2>c0), ' ', sum(Ku, mask=F2>c0)/icell
+-         end if
++         ! if (my_task==master_task) then
++         !    write(nu_diag,'(a,2(1pe12.4,1x),a,1pe12.4)') 'CDP: Ku@F2>0 min/max/avg =', &
++         !    minval(Ku, mask=F2>c0), maxval(Ku, mask=F2>c0), ' ', sum(Ku, mask=F2>c0)/icell
++         ! end if
+       end subroutine coastal_drag_stress_factor
+ 
+ !=======================================================================
+diff --git a/cicecore/cicedyn/infrastructure/ice_grid.F90 b/cicecore/cicedyn/infrastructure/ice_grid.F90
+index 390c94a..806fd94 100644
+--- a/cicecore/cicedyn/infrastructure/ice_grid.F90
++++ b/cicecore/cicedyn/infrastructure/ice_grid.F90
+@@ -2630,6 +2630,8 @@ subroutine build_F2_form_factors_cgrid(coast_file, coast_var, F2_value, test_cas
+    ! ----- locals -----
+    type(block)               :: this_block
+    integer(kind=int_kind)    :: iblk, i, j, ilo, ihi, jlo, jhi
++   integer(kind=int_kind)    :: ilE, ihE, jlE, jhE, ilN, ihN, jlN, jhN, iW, iE, jS, jN
++   integer(kind=int_kind) :: cntW, cntE, cntS, cntNside
+    logical(kind=log_kind)    :: use_coast, want_perimeter
+    real   (kind=dbl_kind)    :: F2_val
+    integer(kind=int_kind)    :: ncid, varid, ierr
+@@ -2688,106 +2690,147 @@ subroutine build_F2_form_factors_cgrid(coast_file, coast_var, F2_value, test_cas
+       write(nu_diag,'(a)') 'build_F2: tmask fallback (no coast_file).'
+    end if
+ #endif
++  ! zero first
++cntE_adj = 0; cntN_adj = 0
+ 
+-   ! ----- main pass: land–ocean adjacencies on T grid -----
+-   cntE_adj = 0;  cntN_adj = 0
+-
++! --- main pass: land–ocean adjacencies on T grid (block-local) ---
++! NOTE: faces are interior ranges: E i=ilo..ihi-1, N j=jlo..jhi-1
+ !$OMP PARALLEL DO PRIVATE(iblk,this_block,ilo,ihi,jlo,jhi,i,j,oceL,oceR,oceS,oceN) SCHEDULE(runtime) REDUCTION(+:cntE_adj,cntN_adj)
+-   do iblk = 1, nblocks
++do iblk = 1, nblocks
++  this_block = get_block(blocks_ice(iblk), iblk)
++  ilo = this_block%ilo;  ihi = this_block%ihi
++  jlo = this_block%jlo;  jhi = this_block%jhi
++
++  ! E faces: compare T(i,j) vs T(i+1,j)
++  do j = jlo, jhi
++    do i = ilo, ihi-1
++#ifdef _NETCDF
++      if (use_coast) then
++        oceL = (coastT(i    ,j) > 0.5d0)
++        oceR = (coastT(i + 1,j) > 0.5d0)
++      else
++#endif
++        oceL = tmask(i    ,j,iblk)
++        oceR = tmask(i + 1,j,iblk)
++#ifdef _NETCDF
++      end if
++#endif
++      if (oceL .neqv. oceR) then
++        F2E(i,j,iblk) = F2_val
++        cntE_adj = cntE_adj + 1
++      end if
++    end do
++  end do
++
++  ! N faces: compare T(i,j) vs T(i,j+1)
++  do j = jlo, jhi-1
++    do i = ilo, ihi
++#ifdef _NETCDF
++      if (use_coast) then
++        oceS = (coastT(i,j    ) > 0.5d0)
++        oceN = (coastT(i,j + 1) > 0.5d0)
++      else
++#endif
++        oceS = tmask(i,j    ,iblk)
++        oceN = tmask(i,j + 1,iblk)
++#ifdef _NETCDF
++      end if
++#endif
++      if (oceS .neqv. oceN) then
++        F2N(i,j,iblk) = F2_val
++        cntN_adj = cntN_adj + 1
++      end if
++    end do
++  end do
++end do
++!$OMP END PARALLEL DO
++
++! --- perimeter fallback (pure-ocean box tests) ---
++if (.not. use_coast) then
++  if ( (cntE_adj + cntN_adj) == 0 .or. want_perimeter ) then
++    write(nu_diag,'(a)') 'build_F2: perimeter treated as coastline (fallback mode).'
++!$OMP PARALLEL DO PRIVATE(iblk,this_block,ilo,ihi,jlo,jhi,i,j) SCHEDULE(runtime)
++    do iblk = 1, nblocks
+       this_block = get_block(blocks_ice(iblk), iblk)
+       ilo = this_block%ilo;  ihi = this_block%ihi
+       jlo = this_block%jlo;  jhi = this_block%jhi
+ 
+-      ! E faces compare T(i,j) vs T(i+1,j)
++      ! E faces: first and last interior columns
+       do j = jlo, jhi
+-         do i = ilo, ihi-1
+-            if (use_coast) then
+-               oceL = (coastT(i    ,j) > 0.5d0)
+-               oceR = (coastT(i + 1,j) > 0.5d0)
+-            else
+-               oceL = tmask(i    ,j,iblk)
+-               oceR = tmask(i + 1,j,iblk)
+-            end if
+-            if (oceL .neqv. oceR) then
+-               F2E(i,j,iblk) = F2_val
+-               cntE_adj = cntE_adj + 1
+-            end if
+-         end do
++        F2E(ilo  ,j,iblk) = F2_val   ! WEST  edge (first interior E-face)
++        F2E(ihi-1,j,iblk) = F2_val   ! EAST  edge (last  interior E-face)
+       end do
+ 
+-      ! N faces compare T(i,j) vs T(i,j+1)
+-      do j = jlo, jhi-1
+-         do i = ilo, ihi
+-            if (use_coast) then
+-               oceS = (coastT(i,j    ) > 0.5d0)
+-               oceN = (coastT(i,j + 1) > 0.5d0)
+-            else
+-               oceS = tmask(i,j    ,iblk)
+-               oceN = tmask(i,j + 1,iblk)
+-            end if
+-            if (oceS .neqv. oceN) then
+-               F2N(i,j,iblk) = F2_val
+-               cntN_adj = cntN_adj + 1
+-            end if
+-         end do
++      ! N faces: first and last interior rows
++      do i = ilo, ihi
++        F2N(i,jlo  ,iblk) = F2_val   ! SOUTH edge (first interior N-face)
++        F2N(i,jhi-1,iblk) = F2_val   ! NORTH edge (last  interior N-face)
+       end do
+-   end do
++    end do
+ !$OMP END PARALLEL DO
+-
+-   setE = count(F2E > 0.0d0)
+-   setN = count(F2N > 0.0d0)
+-
+-   ! ----- perimeter fallback (pure-ocean box tests) -----
+-   if (.not. use_coast) then
+-      if ( (cntE_adj+cntN_adj == 0) .or. want_perimeter ) then
+-         write(nu_diag,'(a)') 'build_F2: perimeter treated as coastline (fallback mode).'
+-!$OMP PARALLEL DO PRIVATE(iblk,this_block,ilo,ihi,jlo,jhi,i,j) SCHEDULE(runtime)
+-         do iblk = 1, nblocks
+-            this_block = get_block(blocks_ice(iblk), iblk)
+-            ilo = this_block%ilo;  ihi = this_block%ihi
+-            jlo = this_block%jlo;  jhi = this_block%jhi
+-            ! West/East edges → E faces at i=ilo and i=ihi-1
+-            do j = jlo, jhi
+-               F2E(ilo   ,j,iblk) = F2_val
+-               F2E(ihi-1 ,j,iblk) = F2_val
+-            end do
+-            ! South/North edges → N faces at j=jlo and j=jhi-1
+-            do i = ilo, ihi
+-               F2N(i,jlo  ,iblk) = F2_val
+-               F2N(i,jhi-1,iblk) = F2_val
+-            end do
+-         end do
++  end if
++end if
++
++! quick counts
++setE = count(F2E > c0)
++setN = count(F2N > c0)
++
++! counts across blocks for each side (optional but handy)
++
++cntW=0; cntE=0; cntS=0; cntNside=0
++!$OMP PARALLEL DO PRIVATE(iblk,this_block,ilo,ihi,jlo,jhi) &
++!$OMP& SCHEDULE(runtime) REDUCTION(+:cntW,cntE,cntS,cntNside)
++do iblk = 1, nblocks
++  this_block = get_block(blocks_ice(iblk), iblk)
++  ilo = this_block%ilo;  ihi = this_block%ihi
++  jlo = this_block%jlo;  jhi = this_block%jhi
++  cntW     = cntW     + count(F2E(ilo  , jlo:jhi, iblk) > c0)
++  cntE     = cntE     + count(F2E(ihi-1, jlo:jhi, iblk) > c0)
++  cntS     = cntS     + count(F2N(ilo:ihi, jlo  , iblk) > c0)
++  cntNside = cntNside + count(F2N(ilo:ihi, jhi-1, iblk) > c0)
++end do
+ !$OMP END PARALLEL DO
+-         setE = count(F2E > 0.0d0)
+-         setN = count(F2N > 0.0d0)
+-      end if
+-   end if
+ 
+-   ! ----- cleanup -----
+-   if (use_coast) then
+-      if (allocated(coastT)) deallocate(coastT)
+-   end if
+-
+-   cntE_act = 0
+-   cntN_act = 0
+-   !$OMP PARALLEL DO PRIVATE(iblk,this_block,ilo,ihi,jlo,jhi) REDUCTION(+:cntE_act,cntN_act)
+-   do iblk = 1, nblocks
+-      this_block = get_block(blocks_ice(iblk), iblk)
+-      ilo = this_block%ilo;  ihi = this_block%ihi
+-      jlo = this_block%jlo;  jhi = this_block%jhi
+-      cntE_act = cntE_act + (ihi-ilo)  * (jhi-jlo+1)   ! E faces per block
+-      cntN_act = cntN_act + (ihi-ilo+1)* (jhi-jlo)     ! N faces per block
+-   end do
+-   !$OMP END PARALLEL DO
+-
+-   ! ----- diagnostics -----
+-   write(nu_diag,'(a,l1,a,i10,a,i10)') 'build_F2: use_coast=', use_coast,  &
+-      '  E faces active=', cntE_act, '  E coast-adj=', cntE_adj
+-   write(nu_diag,'(a,a,i10,a,i10)') 'build_F2: counts  N faces active=',  &
+-      ' ', cntN_act, '  N coast-adj=', cntN_adj
+-   write(nu_diag,'(a,1p,2e12.4,a,1p,2e12.4)') 'build_F2: F2E(min,max)=',  &
+-        minval(F2E), maxval(F2E), '  F2N(min,max)=', minval(F2N), maxval(F2N)
+-   write(nu_diag,'(a,i10,a,i10)') 'build_F2: faces set:  E=', setE, '  N=', setN
++write(nu_diag,'(a,4(i0,1x))') 'build_F2: edge counts W/E/S/N = ', &
++                               cntW, cntE, cntS, cntNside
++write(nu_diag,'(a,1p,2e12.4,a,1p,2e12.4)') 'build_F2: F2E(min,max)=',  &
++     minval(F2E), maxval(F2E), '  F2N(min,max)=', minval(F2N), maxval(F2N)
++
++   ! ! ----- cleanup -----
++   ! if (use_coast) then
++   !    if (allocated(coastT)) deallocate(coastT)
++   ! end if
++
++   ! cntE_act = 0
++   ! cntN_act = 0
++   ! !$OMP PARALLEL DO PRIVATE(iblk,this_block,ilo,ihi,jlo,jhi) REDUCTION(+:cntE_act,cntN_act)
++   ! do iblk = 1, nblocks
++   !    this_block = get_block(blocks_ice(iblk), iblk)
++   !    ilo = this_block%ilo;  ihi = this_block%ihi
++   !    jlo = this_block%jlo;  jhi = this_block%jhi
++   !    cntE_act = cntE_act + (ihi-ilo)  * (jhi-jlo+1)   ! E faces per block
++   !    cntN_act = cntN_act + (ihi-ilo+1)* (jhi-jlo)     ! N faces per block
++   ! end do
++   ! !$OMP END PARALLEL DO
++
++   ! ! ----- diagnostics (safe, no out-of-scope iblk) -----
++   ! if (my_task == master_task) then
++   !    write(nu_diag,'(a,l1,a,i10,a,i10)') 'build_F2: use_coast=', use_coast,  &
++   !       '  F2E faces active=', cntE_act, '  F2E coast-adj=', cntE_adj
++   !    write(nu_diag,'(a,a,i10,a,i10)') 'build_F2: counts  F2N faces active=',  &
++   !       ' ', cntN_act, '  F2N coast-adj=', cntN_adj
++   !    write(nu_diag,'(a,i10,a,i10)') 'build_F2: faces set:  F2E=', setE, '  F2N=', setN
++   !    write(nu_diag,'(a,1p,2e12.4,a,1p,2e12.4)') 'build_F2: F2E(min,max)=',  &
++   !       minval(F2E), maxval(F2E), '  F2N(min,max)=', minval(F2N), maxval(F2N)
++   !    write(nu_diag,'(a,1pe12.4,1x,1pe12.4)') 'build_F2: F2E west min/max =',  &
++   !       minval(F2E(ilo   :ilo   , jlo:jhi, iblk)), maxval(F2E(ilo   :ilo   , jlo:jhi, iblk))
++   !    write(nu_diag,'(a,1pe12.4,1x,1pe12.4)') 'build_F2: F2E east min/max =',  &
++   !       minval(F2E(ihi-1 :ihi-1 , jlo:jhi, iblk)), maxval(F2E(ihi-1 :ihi-1 , jlo:jhi, iblk))
++   !    write(nu_diag,'(a,1pe12.4,1x,1pe12.4)') 'build_F2: F2N south min/max=',  &
++   !       minval(F2N(ilo:ihi, jlo   :jlo   , iblk)), maxval(F2N(ilo:ihi, jlo   :jlo   , iblk))
++   !    write(nu_diag,'(a,1pe12.4,1x,1pe12.4)') 'build_F2: F2N north min/max=',  &
++   !       minval(F2N(ilo:ihi, jhi-1 :jhi-1 , iblk)), maxval(F2N(ilo:ihi, jhi-1 :jhi-1 , iblk))
++   ! end if
+ 
+ end subroutine build_F2_form_factors_cgrid
+ 
+-- 
+2.43.7
+

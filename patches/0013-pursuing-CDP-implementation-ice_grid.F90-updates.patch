@@ -1,0 +1,120 @@
+From 12d75932d29bc192c5a435fc28dd9805176fc32d Mon Sep 17 00:00:00 2001
+From: dpath2o <dpath2o@mac.com>
+Date: Sat, 25 Oct 2025 07:15:00 +1100
+Subject: [PATCH 13/34] pursuing CDP implementation: ice_grid.F90 updates
+
+---
+ cicecore/cicedyn/analysis/ice_history.F90    |  6 +--
+ cicecore/cicedyn/dynamics/ice_dyn_evp.F90    |  7 ++-
+ cicecore/cicedyn/infrastructure/ice_grid.F90 | 45 ++++++++------------
+ 3 files changed, 23 insertions(+), 35 deletions(-)
+
+diff --git a/cicecore/cicedyn/analysis/ice_history.F90 b/cicecore/cicedyn/analysis/ice_history.F90
+index 60191e8..e47e0a7 100644
+--- a/cicecore/cicedyn/analysis/ice_history.F90
++++ b/cicecore/cicedyn/analysis/ice_history.F90
+@@ -458,8 +458,8 @@ subroutine init_hist (dt)
+          f_KuyN   = f_Kuy
+          f_KuxE   = f_Kux
+          f_KuyE   = f_Kuy
+-         f_F2E    = f_uvel
+-         f_F2N    = f_uvel
++         f_F2E    = f_F2E
++         f_F2N    = f_F2N
+       endif
+ 
+       call broadcast_scalar (f_tlon, master_task)
+@@ -2720,7 +2720,7 @@ subroutine accum_hist (dt)
+              call accum_hist_field(n_F2N, iblk, F2N(:,:,iblk), a2D)
+          if (f_F2E(1:1) /= 'x') &
+              call accum_hist_field(n_F2E, iblk, F2E(:,:,iblk), a2D)
+-             
++
+ ! The following fields (divu, shear, vort, sig1, and sig2) will be smeared
+ !  if averaged over more than a few days.
+ ! Snapshots may be more useful (see below).
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90 b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+index 8a39b80..6177e7a 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+@@ -156,10 +156,8 @@ subroutine init_evp
+       if (coastal_drag .and. create_form_factors) then
+          do iblk = 1, nblocks
+             this_block = get_block(blocks_ice(iblk), iblk)
+-            ilo = this_block%ilo
+-            ihi = this_block%ihi
+-            jlo = this_block%jlo
+-            jhi = this_block%jhi
++            ilo = this_block%ilo;  ihi = this_block%ihi
++            jlo = this_block%jlo;  jhi = this_block%jhi
+             do j = jlo, jhi
+                do i = ilo, ihi
+                   iceEmask(i,j,iblk) = tmask(i,j,iblk) .or. tmask(i+1,j,iblk)
+@@ -167,6 +165,7 @@ subroutine init_evp
+                enddo
+             enddo
+          enddo
++         call build_F2_form_factors_box_grid()
+       endif
+ 
+       if (evp_algorithm == "shared_mem_1d" ) then
+diff --git a/cicecore/cicedyn/infrastructure/ice_grid.F90 b/cicecore/cicedyn/infrastructure/ice_grid.F90
+index 86ca8a7..5bb375a 100644
+--- a/cicecore/cicedyn/infrastructure/ice_grid.F90
++++ b/cicecore/cicedyn/infrastructure/ice_grid.F90
+@@ -2658,35 +2658,24 @@ subroutine build_F2_form_factors_box_grid(adt_in)
+             ilo = this_block%ilo;  ihi = this_block%ihi
+             jlo = this_block%jlo;  jhi = this_block%jhi
+             jmid = (jlo + jhi)/2
+-
+-            ! ---- WEST/EAST boundaries (vertical sides) ----
+-            if (do_EW) then
+-               ! WEST boundary column: i = ilo
+-               do j = jlo, jhi
+-                  F2E(ilo, j, iblk) = F2_val   ! E-face on the west boundary column
+-                  F2N(ilo, j, iblk) = F2_val   ! N-face belonging to that boundary column cell
+-               end do
+-               ! EAST boundary column: i = ihi
+-               do j = jlo, jhi
+-                  F2E(ihi, j, iblk) = F2_val
+-                  F2N(ihi, j, iblk) = F2_val
+-               end do
+-            end if
+-
+-            ! ---- SOUTH/NORTH boundaries (horizontal sides) ----
+-            if (do_NS) then
+-               ! SOUTH boundary row: j = jlo
+-               do i = ilo, ihi
+-               F2E(i, jlo, iblk) = F2_val    ! E-face belonging to the south boundary row cell
+-               F2N(i, jlo, iblk) = F2_val    ! N-face on the south boundary row
+-               end do
+-               ! NORTH boundary row: j = jhi
++            ! E faces: i=ilo..ihi-1, j=jlo..jhi
++            do j = jlo, jhi
++               do i = ilo, ihi-1
++                  if ( (tmask(i,j,iblk) .neqv. tmask(i+1,j,iblk)) .and. emask(i,j,iblk) ) then
++                     F2E(i,j,iblk) = F2_val
++                  endif
++               enddo
++            enddo
++            ! N faces: i=ilo..ihi, j=jlo..jhi-1
++            do j = jlo, jhi-1
+                do i = ilo, ihi
+-               F2E(i, jhi, iblk) = F2_val
+-               F2N(i, jhi, iblk) = F2_val
+-               end do
+-            end if
+-         end do
++                  if ( (tmask(i,j,iblk) .neqv. tmask(i,j+1,iblk)) .and. nmask(i,j,iblk) ) then
++                     F2N(i,j,iblk) = F2_val
++                  endif
++               enddo
++            enddo
++         enddo
++
+ 
+          write(nu_diag,'(a,2es12.4,a,2es12.4)') 'build_F2: F2E(min,max)=', minval(F2E), maxval(F2E), &
+                                                 '  F2N(min,max)=', minval(F2N), maxval(F2N)
+-- 
+2.43.7
+

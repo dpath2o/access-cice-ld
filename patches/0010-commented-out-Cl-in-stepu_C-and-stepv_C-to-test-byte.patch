@@ -1,0 +1,39 @@
+From caf96fc5931f264505045babb75339e0147190d1 Mon Sep 17 00:00:00 2001
+From: dpath2o <dpath2o@mac.com>
+Date: Thu, 23 Oct 2025 07:09:05 +1100
+Subject: [PATCH 10/34] commented out 'Cl' in stepu_C and stepv_C to test
+ bytewise with preCDP
+
+---
+ cicecore/cicedyn/dynamics/ice_dyn_shared.F90 | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90 b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+index 66c6e4d..86d4840 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+@@ -1153,8 +1153,8 @@ subroutine stepu_C (nx_block,   ny_block, &
+ 
+          ccc = sqrt(uold**2 + vold**2) + u0
+          Cb  = Tb(i,j) / ccc ! for seabed stress
+-         Cl  = Ku(i,j) / ccc ! for coastal drag
+-         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb + Cl ! kg/m^2 s
++         Cl  = Ku(i,j) / ccc ! for coastal drag stress
++         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb! + Cl ! kg/m^2 s
+          ccb = fm(i,j) + sign(c1,fm(i,j)) * vrel * sinw ! kg/m^2 s
+ 
+          ! compute the velocity components
+@@ -1255,8 +1255,8 @@ subroutine stepv_C (nx_block,   ny_block, &
+ 
+          ccc = sqrt(uold**2 + vold**2) + u0
+          Cb  = Tb(i,j) / ccc ! for seabed stress
+-         Cl  = Ku(i,j) / ccc ! for coastal drag
+-         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb + Cl ! kg/m^2 s
++         Cl  = Ku(i,j) / ccc ! for coastal drag stress
++         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb !+ Cl ! kg/m^2 s
+          ccb = fm(i,j) + sign(c1,fm(i,j)) * vrel * sinw ! kg/m^2 s
+ 
+          ! compute the velocity components
+-- 
+2.43.7
+

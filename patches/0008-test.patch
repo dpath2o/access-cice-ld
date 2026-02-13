@@ -1,0 +1,107 @@
+From d44f03c9fb74e2ee6c0557716c266a2e8a5f3884 Mon Sep 17 00:00:00 2001
+From: dpath2o <dpath2o@mac.com>
+Date: Wed, 22 Oct 2025 07:57:28 +1100
+Subject: [PATCH 08/34] test
+
+---
+ cicecore/cicedyn/analysis/ice_history.F90 |  7 ++++++-
+ cicecore/cicedyn/dynamics/ice_dyn_evp.F90 | 15 ++++++++++++++-
+ cicecore/cicedyn/general/ice_flux.F90     |  8 ++++----
+ 3 files changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/cicecore/cicedyn/analysis/ice_history.F90 b/cicecore/cicedyn/analysis/ice_history.F90
+index 46a39cf..dabddd7 100644
+--- a/cicecore/cicedyn/analysis/ice_history.F90
++++ b/cicecore/cicedyn/analysis/ice_history.F90
+@@ -67,7 +67,8 @@ subroutine init_hist (dt)
+       use ice_calendar, only: yday, days_per_year, histfreq, &
+           histfreq_n, nstreams
+       use ice_domain_size, only: max_blocks, max_nstrm, nilyr, nslyr, nblyr, ncat, nfsd
+-      use ice_dyn_shared, only: kdyn, shearU
++      use ice_dyn_shared, only: kdyn
++      use ice_dyn_evp, only: uvelE, vvelE, uvelN, vvelN, shearU
+       use ice_flux, only: mlt_onset, frz_onset, albcnt, snwcnt
+       use ice_grid, only: grid_ice, grid_outfile, &
+           grid_atm_thrm, grid_atm_dynu, grid_atm_dynv, &
+@@ -709,6 +710,10 @@ subroutine init_hist (dt)
+     !   call broadcast_scalar (f_F2N, master_task)
+     !   call broadcast_scalar (f_F2E, master_task)
+       call broadcast_scalar (f_shearU, master_task)
++      call broadcast_scalar (f_uvelN, master_task)
++      call broadcast_scalar (f_vvelN, master_task)
++      call broadcast_scalar (f_uvelE, master_task)
++      call broadcast_scalar (f_vvelE, master_task)
+ 
+       call broadcast_scalar (f_aicen, master_task)
+       call broadcast_scalar (f_vicen, master_task)
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90 b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+index 49560e3..0e0bb27 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+@@ -116,7 +116,9 @@ module ice_dyn_evp
+          umassdti (:,:,:)     ! mass of U-cell/dte (kg/m^2 s)
+ 
+       real(kind=dbl_kind), allocatable, public :: &
+-         shearU(:,:,:) ! shear array on U points
++         uvelE(:,:,:), vvelE(:,:,:), &   ! E-face velocities (C grid)
++         uvelN(:,:,:), vvelN(:,:,:), &   ! N-face velocities (C grid)
++         shearU(:,:,:)                   ! shear at U (NE corner)
+ 
+       public :: evp, init_evp
+ 
+@@ -222,6 +224,17 @@ subroutine init_evp
+                    stat=ierr)
+          if (ierr/=0) call abort_ice(subname//' ERROR: Out of memory ratio')
+ 
++         if (.not. allocated(uvelE)) then
++            allocate(uvelE(nx_block,ny_block,nblocks), vvelE(nx_block,ny_block,nblocks), &
++                     uvelN(nx_block,ny_block,nblocks), vvelN(nx_block,ny_block,nblocks), &
++                     shearU(nx_block,ny_block,nblocks), &
++                     stat=ierr)
++            if (ierr/=0) call abort_ice(subname//' ERROR: Out of memory ratio')
++            uvelE = c0; vvelE = c0
++            uvelN = c0; vvelN = c0
++            shearU = c0
++         end if
++
+          !$OMP PARALLEL DO PRIVATE(iblk,i,j,ilo,ihi,jlo,jhi,this_block)
+          do iblk = 1, nblocks
+             this_block = get_block(blocks_ice(iblk),iblk)
+diff --git a/cicecore/cicedyn/general/ice_flux.F90 b/cicecore/cicedyn/general/ice_flux.F90
+index ea8bf77..7d3277f 100644
+--- a/cicecore/cicedyn/general/ice_flux.F90
++++ b/cicecore/cicedyn/general/ice_flux.F90
+@@ -112,10 +112,10 @@ module ice_flux
+          dardg1dt, & ! rate of area loss by ridging ice (1/s)
+          dardg2dt, & ! rate of area gain by new ridges (1/s)
+          dvirdgdt, & ! rate of ice volume ridged (m/s)
+-         opening , & ! rate of opening due to divergence/shear (1/s)
++         opening !, & ! rate of opening due to divergence/shear (1/s)
+          ! dpath2o
+          ! KuxN, KuyN, KuxE, KuyE, & ! coastal drag stress components on C-grid (N/m^2)
+-         shearU
++         ! shearU
+ 
+       real (kind=dbl_kind), dimension (:,:,:,:), allocatable, public :: &
+        ! ridging diagnostics in categories
+@@ -669,7 +669,7 @@ subroutine alloc_flux
+          ! KuE        (nx_block,ny_block,max_blocks), & ! coastal drag stress factor at E points (landfast ice)
+          ! KuxE       (nx_block,ny_block,max_blocks), & ! coastal drag stress (x) at E points (N/m^2)
+          ! KuyE       (nx_block,ny_block,max_blocks), & ! coastal drag stress (y) at E points (N/m^2)
+-         shearU     (nx_block,ny_block,max_blocks), & !
++         ! shearU     (nx_block,ny_block,max_blocks), & !
+          stat=ierr)
+       if (ierr/=0) call abort_ice('(alloc_flux): Out of memory (C or CD grid)')
+ 
+@@ -1216,7 +1216,7 @@ subroutine init_history_dyn
+          ! KuyN       (:,:,:) = c0
+          ! KuxE       (:,:,:) = c0
+          ! KuyE       (:,:,:) = c0
+-         shearU     (:,:,:) = c0
++         ! shearU     (:,:,:) = c0
+       end if
+       end subroutine init_history_dyn
+ 
+-- 
+2.43.7
+

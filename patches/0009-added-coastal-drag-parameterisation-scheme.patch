@@ -1,0 +1,1824 @@
+From 6e7dadfe51beee19c0820dc7f77d19a60acd49a5 Mon Sep 17 00:00:00 2001
+From: dpath2o <dpath2o@mac.com>
+Date: Thu, 23 Oct 2025 01:04:45 +1100
+Subject: [PATCH 09/34] added coastal drag parameterisation scheme
+
+---
+ cicecore/cicedyn/analysis/ice_diagnostics.F90 |  60 +--
+ cicecore/cicedyn/analysis/ice_history.F90     | 113 +----
+ .../cicedyn/analysis/ice_history_shared.F90   |  23 +-
+ cicecore/cicedyn/dynamics/ice_dyn_evp.F90     | 272 ++++++++---
+ cicecore/cicedyn/dynamics/ice_dyn_shared.F90  | 429 ++++++++++++++----
+ cicecore/cicedyn/general/ice_flux.F90         |  50 +-
+ cicecore/cicedyn/general/ice_init.F90         | 153 ++++---
+ cicecore/cicedyn/infrastructure/ice_grid.F90  |  93 +++-
+ 8 files changed, 777 insertions(+), 416 deletions(-)
+
+diff --git a/cicecore/cicedyn/analysis/ice_diagnostics.F90 b/cicecore/cicedyn/analysis/ice_diagnostics.F90
+index a4306f9..3a6ceb8 100644
+--- a/cicecore/cicedyn/analysis/ice_diagnostics.F90
++++ b/cicecore/cicedyn/analysis/ice_diagnostics.F90
+@@ -126,17 +126,11 @@ subroutine runtime_diags (dt)
+           update_ocn_f, cpl_frazil, Tair, Qa, fsw, fcondtop, meltt, meltb, meltl, snoice, &
+           dsnow, congel, sst, sss, Tf, fhocn, &
+           swvdr, swvdf, swidr, swidf, &
+-          alvdr_init, alvdf_init, alidr_init, alidf_init!, &
+-          ! dpath2o
+-          ! KuxE, KuyN
++          alvdr_init, alvdf_init, alidr_init, alidf_init
+       use ice_flux_bgc, only: faero_atm, faero_ocn, fiso_atm, fiso_ocn
+       use ice_global_reductions, only: global_sum, global_sum_prod, global_maxval
+-      use ice_grid, only: lmask_n, lmask_s, tarean, tareas, grid_ice, grid_average_X2Y!, &
+-      ! dpath2o
+-      !                     F2E, F2N
++      use ice_grid, only: lmask_n, lmask_s, tarean, tareas, grid_ice, grid_average_X2Y
+       use ice_state   ! everything
+-      ! dpath2o
+-      ! use ice_dyn_shared, only: coastal_drag!, coastal_form_factor_E, coastal_form_factor_N
+ ! tcraig, this is likely to cause circular dependency because ice_prescribed_mod is high level routine
+ #ifdef CESMCOUPLED
+       use ice_prescribed_mod, only: prescribed_ice
+@@ -222,14 +216,6 @@ subroutine runtime_diags (dt)
+ 
+       character(len=*), parameter :: subname = '(runtime_diags)'
+ 
+-      ! dpath2o: locals for CDP print
+-      real(kind=dbl_kind), parameter :: tiny = 1.0d-12
+-      integer :: nactE, nactN
+-      real(kind=dbl_kind) :: f2e_min, f2e_max, f2n_min, f2n_max
+-      real(kind=dbl_kind) :: kuxE_mean, kuxE_max, kuyN_mean, kuyN_max
+-      real(kind=dbl_kind) :: clE_max,  clN_max
+-
+-
+       call icepack_query_parameters(ktherm_out=ktherm, calc_Tsfc_out=calc_Tsfc)
+       call icepack_query_tracer_flags(tr_brine_out=tr_brine, tr_aero_out=tr_aero, &
+            tr_pond_topo_out=tr_pond_topo, tr_fsd_out=tr_fsd, tr_iso_out=tr_iso, &
+@@ -1096,48 +1082,6 @@ subroutine runtime_diags (dt)
+         write(nu_diag,900) 'max ice speed    (m/s) = ',umaxn,  umaxs
+         write(nu_diag,900) 'max strength    (kN/m) = ',pmaxn,  pmaxs
+ 
+-         !-----------------------------------------------------------------------
+-         ! dpath2o: Coastal Drag Parametrization (CDP) quick diagnostics
+-         !-----------------------------------------------------------------------
+-         ! if (coastal_drag .and. (grid_ice == 'C' .or. grid_ice == 'CD')) then
+-         !    ! Active CDP faces (F2>0)
+-         !    nactE = count( F2E > 0.0_dbl_kind )!count( coastal_form_factor_E > 0.0_dbl_kind )
+-         !    nactN = count( F2N > 0.0_dbl_kind )
+-
+-         !    ! Basic F2 stats (over all faces)
+-         !    f2e_min = minval(F2E);  f2e_max = maxval(F2E)!minval(coastal_form_factor_E);  f2e_max = maxval(coastal_form_factor_E)
+-         !    f2n_min = minval(F2N);  f2n_max = maxval(F2N)
+-
+-         !    ! Stress magnitudes on active faces
+-         !    if (nactE > 0) then
+-         !       kuxE_mean = sum( abs(KuxE), mask = (F2E > 0.0_dbl_kind) ) / real(nactE,kind(dbl_kind))
+-         !       kuxE_max  = maxval( abs(KuxE), mask = (F2E > 0.0_dbl_kind) )
+-         !       ! |Cl| ≈ |KuxE| / |uE|
+-         !       clE_max   = maxval( abs(KuxE) / (abs(uvelE) + tiny), mask = (F2E > 0.0_dbl_kind) )
+-         !    else
+-         !       kuxE_mean = 0.0_dbl_kind; kuxE_max = 0.0_dbl_kind; clE_max = 0.0_dbl_kind
+-         !    end if
+-
+-         !    if (nactN > 0) then
+-         !       kuyN_mean = sum( abs(KuyN), mask = (F2N > 0.0_dbl_kind) ) &
+-         !                   / real(nactN,kind(dbl_kind))
+-         !       kuyN_max  = maxval( abs(KuyN), mask = (F2N > 0.0_dbl_kind) )
+-         !       ! |Cl| ≈ |KuyN| / |vN|
+-         !       clN_max   = maxval( abs(KuyN) / (abs(vvelN) + tiny), mask = (F2N > 0.0_dbl_kind) )
+-         !    else
+-         !       kuyN_mean = 0.0_dbl_kind; kuyN_max = 0.0_dbl_kind; clN_max = 0.0_dbl_kind
+-         !    end if
+-
+-         !    if (my_task == master_task) then
+-         !       write(nu_diag,'(a,i8,a,i8)') 'CDP faces active (E,N) = ', nactE, ', ', nactN
+-         !       write(nu_diag,'(a,2f9.3,a,2f9.3)') 'CDP F2 range  (E,N) = [', f2e_min, f2e_max, ']  [', f2n_min, f2n_max, ']'
+-         !       write(nu_diag,'(a,2es12.4,a,2es12.4)') 'CDP |KuxE|(mean,max)= ', kuxE_mean, kuxE_max,  &
+-         !                                              '   |KuyN|(mean,max)= ', kuyN_mean, kuyN_max
+-         !       write(nu_diag,'(a,2es12.4)')           'CDP |ClE|_max, |ClN|_max= ', clE_max, clN_max
+-         !    end if
+-         ! end if
+-
+-
+         if (print_global) then  ! global diags for conservations checks
+ 
+ ! tcraig, this is likely to cause circular dependency because ice_prescribed_mod is high level routine
+diff --git a/cicecore/cicedyn/analysis/ice_history.F90 b/cicecore/cicedyn/analysis/ice_history.F90
+index dabddd7..a6eabe2 100644
+--- a/cicecore/cicedyn/analysis/ice_history.F90
++++ b/cicecore/cicedyn/analysis/ice_history.F90
+@@ -68,7 +68,6 @@ subroutine init_hist (dt)
+           histfreq_n, nstreams
+       use ice_domain_size, only: max_blocks, max_nstrm, nilyr, nslyr, nblyr, ncat, nfsd
+       use ice_dyn_shared, only: kdyn
+-      use ice_dyn_evp, only: uvelE, vvelE, uvelN, vvelN, shearU
+       use ice_flux, only: mlt_onset, frz_onset, albcnt, snwcnt
+       use ice_grid, only: grid_ice, grid_outfile, &
+           grid_atm_thrm, grid_atm_dynu, grid_atm_dynv, &
+@@ -455,15 +454,6 @@ subroutine init_hist (dt)
+          f_taubyN = f_tauby
+          f_taubxE = f_taubx
+          f_taubyE = f_tauby
+-         ! dpath2o
+-        !  f_KuxN   = f_Kux
+-        !  f_KuyN   = f_Kuy
+-        !  f_KuxE   = f_Kux
+-        !  f_KuyE   = f_Kuy
+-         f_shearU = f_shearU
+-        !  f_F2E    = f_uvel
+-        !  f_F2N    = f_uvel
+-
+       endif
+ 
+       call broadcast_scalar (f_tlon, master_task)
+@@ -702,18 +692,6 @@ subroutine init_hist (dt)
+       call broadcast_scalar (f_sistreave, master_task)
+       call broadcast_scalar (f_sistremax, master_task)
+       call broadcast_scalar (f_sirdgthick, master_task)
+-      ! dpath2o
+-    !   call broadcast_scalar (f_KuxN, master_task)
+-    !   call broadcast_scalar (f_KuyN, master_task)
+-    !   call broadcast_scalar (f_KuxE, master_task)
+-    !   call broadcast_scalar (f_KuyE, master_task)
+-    !   call broadcast_scalar (f_F2N, master_task)
+-    !   call broadcast_scalar (f_F2E, master_task)
+-      call broadcast_scalar (f_shearU, master_task)
+-      call broadcast_scalar (f_uvelN, master_task)
+-      call broadcast_scalar (f_vvelN, master_task)
+-      call broadcast_scalar (f_uvelE, master_task)
+-      call broadcast_scalar (f_vvelE, master_task)
+ 
+       call broadcast_scalar (f_aicen, master_task)
+       call broadcast_scalar (f_vicen, master_task)
+@@ -1347,39 +1325,6 @@ subroutine init_hist (dt)
+              "positive is y direction on E grid", c1, c0,                &
+              ns1, f_taubyE)
+ 
+-        !-----------------------------
+-        ! dpath2o: coastal drag stress
+-        ! call define_hist_field(n_KuxN,"KuxN","N/m^2",nstr2D, ncstr, &
+-        !     "coastal (lateral) drag stress (x)", &
+-        !     "positive is x direction on N grid", c1, c0, ns1, f_KuxN)
+-
+-        ! call define_hist_field(n_KuyN,"KuyN","N/m^2",nstr2D, ncstr, &
+-        !     "coastal (lateral) drag stress (y)", &
+-        !     "positive is y direction on N grid", c1, c0, ns1, f_KuyN)
+-
+-        ! call define_hist_field(n_KuxE,"KuxE","N/m^2",estr2D, ecstr, &
+-        !     "coastal (lateral) drag stress (x)", &
+-        !     "positive is x direction on E grid", c1, c0, ns1, f_KuxE)
+-
+-        ! call define_hist_field(n_KuyE,"KuyE","N/m^2",estr2D, ecstr, &
+-        !     "coastal (lateral) drag stress (y)", &
+-        !     "positive is y direction on E grid", c1, c0, ns1, f_KuyE)
+-
+-        ! call define_hist_field(n_F2N, "F2N", "-", nstr2D, ncstr, &
+-        !     "coastal drag form factor (unitless)", &
+-        !     "static; N-face on C-grid", c1, c0, ns1, f_F2N)
+-
+-        ! call define_hist_field(n_F2E, "F2E", "-", estr2D, ecstr, &
+-        !     "coastal drag form factor (unitless)", &
+-        !     "static; E-face on C-grid", c1, c0, ns1, f_F2E)
+-
+-         call define_hist_field(n_shearU,"shearU","%/day",ustr2D, ucstr, &
+-             "strain rate (shear) at U-points",                         &
+-             "shear is instantaneous, on U-grid", secday*c100, c0,      &
+-             ns1, f_shearU)
+-        ! dpath2o
+-        !-----------------------------
+-
+          call define_hist_field(n_strength,"strength","N/m",tstr2D, tcstr, &
+              "compressive ice strength",                                 &
+              "none", c1, c0,                                             &
+@@ -2211,7 +2156,7 @@ subroutine accum_hist (dt)
+       use ice_blocks, only: block, get_block, nx_block, ny_block
+       use ice_domain, only: blocks_ice, nblocks
+       use ice_domain_size, only: nfsd
+-      use ice_grid, only: tmask, lmask_n, lmask_s, dxU, dyU, grid_ice!, & !dpath2o: F2E, F2N
++      use ice_grid, only: tmask, lmask_n, lmask_s, dxU, dyU, grid_ice
+       use ice_calendar, only: new_year, write_history, &
+                               write_ic, timesecs, histfreq, nstreams, mmonth, &
+                               new_month
+@@ -2237,22 +2182,21 @@ subroutine accum_hist (dt)
+           stressp_2, stressp_3, stressp_4, sig1, sig2, sigP, &
+           mlt_onset, frz_onset, dagedtt, dagedtd, fswint_ai, keffn_top, &
+           snowfrac, alvdr_ai, alvdf_ai, alidr_ai, alidf_ai, update_ocn_f, &
+-          cpl_frazil!, &
+-          ! dpath2o
+-          ! KuxN, KuyN, KuxE, KuyE
+-      use ice_arrays_column, only   : snowfracn, Cdn_atm
+-      use ice_history_shared        ! almost everything
+-      use ice_history_write, only   : ice_write_hist
+-      use ice_history_bgc, only     : accum_hist_bgc
+-      use ice_history_mechred, only : accum_hist_mechred
+-      use ice_history_pond, only    : accum_hist_pond
+-      use ice_history_snow, only    : accum_hist_snow, f_rhos_cmp, f_rhos_cnt, n_rhos_cmp, n_rhos_cnt
+-      use ice_history_drag, only    : accum_hist_drag
+-      use icepack_intfc, only       : icepack_mushy_density_brine, icepack_mushy_liquid_fraction
+-      use icepack_intfc, only       : icepack_mushy_temperature_mush
+-      use ice_history_fsd, only     : accum_hist_fsd
+-      use ice_state                 ! almost everything
+-      use ice_timers, only          : ice_timer_start, ice_timer_stop, timer_readwrite
++          cpl_frazil
++      use ice_arrays_column, only: snowfracn, Cdn_atm
++      use ice_history_shared ! almost everything
++      use ice_history_write, only: ice_write_hist
++      use ice_history_bgc, only: accum_hist_bgc
++      use ice_history_mechred, only: accum_hist_mechred
++      use ice_history_pond, only: accum_hist_pond
++      use ice_history_snow, only: accum_hist_snow, &
++          f_rhos_cmp, f_rhos_cnt, n_rhos_cmp, n_rhos_cnt
++      use ice_history_drag, only: accum_hist_drag
++      use icepack_intfc, only: icepack_mushy_density_brine, icepack_mushy_liquid_fraction
++      use icepack_intfc, only: icepack_mushy_temperature_mush
++      use ice_history_fsd, only: accum_hist_fsd
++      use ice_state ! almost everything
++      use ice_timers, only: ice_timer_start, ice_timer_stop, timer_readwrite
+ 
+       real (kind=dbl_kind), intent(in) :: &
+          dt      ! time step
+@@ -2723,22 +2667,6 @@ subroutine accum_hist (dt)
+              call accum_hist_field(n_taubxE, iblk, taubxE(:,:,iblk), a2D)
+          if (f_taubyE(1:1) /= 'x') &
+              call accum_hist_field(n_taubyE, iblk, taubyE(:,:,iblk), a2D)
+-         !--------------------------------
+-         ! dpath2o: coastal drag stress (faces)
+-        !  if (f_KuxN(1:1) /= 'x') &
+-        !      call accum_hist_field(n_KuxN, iblk, KuxN(:,:,iblk), a2D)
+-        !  if (f_KuyN(1:1) /= 'x') &
+-        !      call accum_hist_field(n_KuyN, iblk, KuyN(:,:,iblk), a2D)
+-        !  if (f_KuxE(1:1) /= 'x') &
+-        !      call accum_hist_field(n_KuxE, iblk, KuxE(:,:,iblk), a2D)
+-        !  if (f_KuyE(1:1) /= 'x') &
+-        !      call accum_hist_field(n_KuyE, iblk, KuyE(:,:,iblk), a2D)
+-        !  if (f_F2N(1:1) /= 'x') &
+-        !      call accum_hist_field(n_F2N, iblk, F2N(:,:,iblk), a2D)
+-        !  if (f_F2E(1:1) /= 'x') &
+-        !      call accum_hist_field(n_F2E, iblk, F2E(:,:,iblk), a2D)
+-        ! dpath2o
+-        !------------------------------
+          if (f_strength(1:1)/= 'x') &
+              call accum_hist_field(n_strength,iblk, strength(:,:,iblk), a2D)
+ 
+@@ -2759,10 +2687,6 @@ subroutine accum_hist (dt)
+ !        if (f_trsig  (1:1) /= 'x') &
+ !             call accum_hist_field(n_trsig,   iblk, trsig(:,:,iblk), a2D)
+ 
+-        ! dpath2o
+-        if (f_shearU (1:1) /= 'x') &
+-            call accum_hist_field(n_shearU,   iblk, shearU(:,:,iblk), a2D)
+-
+          if (f_dvidtt (1:1) /= 'x') &
+              call accum_hist_field(n_dvidtt,  iblk, dvidtt(:,:,iblk), a2D)
+          if (f_dvidtd (1:1) /= 'x') &
+@@ -4106,8 +4030,6 @@ subroutine accum_hist (dt)
+               if (.not. tmask(i,j,iblk)) then ! mask out land points
+                  if (n_divu     (ns) /= 0) a2D(i,j,n_divu(ns),     iblk) = spval_dbl
+                  if (n_shear    (ns) /= 0) a2D(i,j,n_shear(ns),    iblk) = spval_dbl
+-                 ! dpath2o
+-                 if (n_shearU    (ns) /= 0) a2D(i,j,n_shearU(ns),    iblk) = spval_dbl
+                  if (n_vort     (ns) /= 0) a2D(i,j,n_vort(ns),     iblk) = spval_dbl
+                  if (n_sig1     (ns) /= 0) a2D(i,j,n_sig1(ns),     iblk) = spval_dbl
+                  if (n_sig2     (ns) /= 0) a2D(i,j,n_sig2(ns),     iblk) = spval_dbl
+@@ -4138,9 +4060,6 @@ subroutine accum_hist (dt)
+                        divu (i,j,iblk)*avail_hist_fields(n_divu(ns))%cona
+                  if (n_shear    (ns) /= 0) a2D(i,j,n_shear(ns),iblk)     = &
+                        shear(i,j,iblk)*avail_hist_fields(n_shear(ns))%cona
+-                 ! dpath2o
+-                 if (n_shearU   (ns) /= 0) a2D(i,j,n_shearU(ns),iblk)     = &
+-                       shearU(i,j,iblk)*avail_hist_fields(n_shearU(ns))%cona
+                  if (n_vort     (ns) /= 0) a2D(i,j,n_vort(ns),iblk)      = &
+                        vort(i,j,iblk)*avail_hist_fields(n_vort(ns))%cona
+                  if (n_sig1     (ns) /= 0) a2D(i,j,n_sig1(ns),iblk)      = &
+diff --git a/cicecore/cicedyn/analysis/ice_history_shared.F90 b/cicecore/cicedyn/analysis/ice_history_shared.F90
+index 2083c26..daa8057 100644
+--- a/cicecore/cicedyn/analysis/ice_history_shared.F90
++++ b/cicecore/cicedyn/analysis/ice_history_shared.F90
+@@ -362,13 +362,7 @@ module ice_history_shared
+            f_s22       = 'x', &
+            f_yieldstress11  = 'x', &
+            f_yieldstress12  = 'x', &
+-           f_yieldstress22  = 'x', &
+-           ! dpath2o
+-         !   f_Kux  = 'x', f_Kuy  = 'x', &
+-         !   f_KuxN = 'x', f_KuyN = 'x', &
+-         !   f_KuxE = 'x', f_KuyE = 'x', &
+-         !   f_F2N  = 'x', f_F2E  = 'x', &
+-           f_shearU = 'x'
++           f_yieldstress22  = 'x'
+ 
+       !---------------------------------------------------------------
+       ! namelist variables
+@@ -540,12 +534,7 @@ module ice_history_shared
+            f_s22,       &
+            f_yieldstress11, &
+            f_yieldstress12, &
+-           f_yieldstress22, &
+-           ! dpath2o
+-         !   f_Kux , f_Kuy, f_F2N, f_F2E , &
+-         !   f_KuxN, f_KuyN, &
+-         !   f_KuxE, f_KuyE, &
+-           f_shearU
++           f_yieldstress22
+ 
+       !---------------------------------------------------------------
+       ! field indices
+@@ -746,13 +735,7 @@ module ice_history_shared
+            n_s11         , n_s12       , &
+            n_s22         , &
+            n_yieldstress11, n_yieldstress12, &
+-           n_yieldstress22, &
+-           ! dpath2o
+-         !   n_Kux , n_Kuy , &
+-         !   n_KuxN, n_KuyN, &
+-         !   n_KuxE, n_KuyE, &
+-         !   n_F2N , n_F2E , &
+-           n_shearU
++           n_yieldstress22
+ 
+       interface accum_hist_field ! generic interface
+            module procedure accum_hist_field_2D, &
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90 b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+index 0e0bb27..8a39b80 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+@@ -47,11 +47,13 @@ module ice_dyn_evp
+           ndte, yield_curve, ecci, denom1, arlx1i, fcor_blk, fcorE_blk, fcorN_blk, &
+           uvel_init, vvel_init, uvelE_init, vvelE_init, uvelN_init, vvelN_init, &
+           seabed_stress_factor_LKD, seabed_stress_factor_prob, seabed_stress_method, &
+-          seabed_stress, Ktens, revp
++          seabed_stress, Ktens, revp, &
++          coastal_drag, boundary_condition, create_form_factors, coastal_drag_stress_factor, Cs, u0
+       use ice_fileunits, only: nu_diag
+       use ice_exit, only: abort_ice
+       use icepack_intfc, only: icepack_warnings_flush, icepack_warnings_aborted
+       use icepack_intfc, only: icepack_ice_strength, icepack_query_parameters
++      use ice_grid, only: F2E, F2N, build_F2_form_factors_box_grid
+ 
+       implicit none
+       private
+@@ -94,7 +96,7 @@ module ice_dyn_evp
+          strengthU(:,:,:) , & ! strength averaged to U points
+          divergU  (:,:,:) , & ! div array on U points, differentiate from divu
+          tensionU (:,:,:) , & ! tension array on U points
+-         !shearU   (:,:,:) , & ! shear array on U points
++         shearU   (:,:,:) , & ! shear array on U points
+          deltaU   (:,:,:) , & ! delta array on U points
+          zetax2T  (:,:,:) , & ! zetax2 = 2*zeta (bulk viscosity)
+          zetax2U  (:,:,:) , & ! zetax2T averaged to U points
+@@ -115,11 +117,6 @@ module ice_dyn_evp
+          umass    (:,:,:) , & ! total mass of ice and snow (u grid)
+          umassdti (:,:,:)     ! mass of U-cell/dte (kg/m^2 s)
+ 
+-      real(kind=dbl_kind), allocatable, public :: &
+-         uvelE(:,:,:), vvelE(:,:,:), &   ! E-face velocities (C grid)
+-         uvelN(:,:,:), vvelN(:,:,:), &   ! N-face velocities (C grid)
+-         shearU(:,:,:)                   ! shear at U (NE corner)
+-
+       public :: evp, init_evp
+ 
+ !=======================================================================
+@@ -135,7 +132,8 @@ subroutine init_evp
+       use ice_domain, only: nblocks, blocks_ice
+       use ice_grid, only: grid_ice, dyT, dxT, uarear, tmask, G_HTE, G_HTN, dxN, dyE
+       use ice_calendar, only: dt_dyn
+-      use ice_dyn_shared, only: init_dyn_shared, evp_algorithm
++      use ice_dyn_shared, only: init_dyn_shared, evp_algorithm, &
++         iceEmask, iceNmask, coastal_drag, create_form_factors
+       use ice_dyn_evp1d, only: dyn_evp1d_init
+ 
+ !allocate c and cd grid var. Follow structucre of eap
+@@ -153,6 +151,24 @@ subroutine init_evp
+ 
+       call init_dyn_shared(dt_dyn)
+ 
++      !------------------------------------------------
++      ! coastal drag masking 
++      if (coastal_drag .and. create_form_factors) then
++         do iblk = 1, nblocks
++            this_block = get_block(blocks_ice(iblk), iblk)
++            ilo = this_block%ilo
++            ihi = this_block%ihi
++            jlo = this_block%jlo
++            jhi = this_block%jhi
++            do j = jlo, jhi
++               do i = ilo, ihi
++                  iceEmask(i,j,iblk) = tmask(i,j,iblk) .or. tmask(i+1,j,iblk)
++                  iceNmask(i,j,iblk) = tmask(i,j,iblk) .or. tmask(i,j+1,iblk)
++               enddo
++            enddo
++         enddo
++      endif
++
+       if (evp_algorithm == "shared_mem_1d" ) then
+          call dyn_evp1d_init
+       endif
+@@ -224,17 +240,6 @@ subroutine init_evp
+                    stat=ierr)
+          if (ierr/=0) call abort_ice(subname//' ERROR: Out of memory ratio')
+ 
+-         if (.not. allocated(uvelE)) then
+-            allocate(uvelE(nx_block,ny_block,nblocks), vvelE(nx_block,ny_block,nblocks), &
+-                     uvelN(nx_block,ny_block,nblocks), vvelN(nx_block,ny_block,nblocks), &
+-                     shearU(nx_block,ny_block,nblocks), &
+-                     stat=ierr)
+-            if (ierr/=0) call abort_ice(subname//' ERROR: Out of memory ratio')
+-            uvelE = c0; vvelE = c0
+-            uvelN = c0; vvelN = c0
+-            shearU = c0
+-         end if
+-
+          !$OMP PARALLEL DO PRIVATE(iblk,i,j,ilo,ihi,jlo,jhi,this_block)
+          do iblk = 1, nblocks
+             this_block = get_block(blocks_ice(iblk),iblk)
+@@ -282,13 +287,13 @@ subroutine evp (dt)
+           strairxU, strairyU, uocn, vocn, ss_tltx, ss_tlty, fmU, &
+           strtltxU, strtltyU, strocnxU, strocnyU, strintxU, strintyU, taubxU, taubyU, &
+           strax, stray, &
+-          TbU, hwater, &
++          TbU, KuxU, KuyU, KuU, hwater, &
+           strairxN, strairyN, fmN, &
+           strtltxN, strtltyN, strocnxN, strocnyN, strintxN, strintyN, taubxN, taubyN, &
+-          TbN, &
++          TbN, KuxN, KuyN, KuN, &
+           strairxE, strairyE, fmE, &
+           strtltxE, strtltyE, strocnxE, strocnyE, strintxE, strintyE, taubxE, taubyE, &
+-          TbE, &
++          TbE, KuxE, KuyE, KuE, &
+           stressp_1, stressp_2, stressp_3, stressp_4, &
+           stressm_1, stressm_2, stressm_3, stressm_4, &
+           stress12_1, stress12_2, stress12_3, stress12_4, &
+@@ -305,9 +310,9 @@ subroutine evp (dt)
+           ice_timer_start, ice_timer_stop, timer_evp
+       use ice_dyn_shared, only: evp_algorithm, stack_fields, unstack_fields, &
+           DminTarea, visc_method, deformations, deformationsC_T, deformationsCD_T, &
+-          strain_rates_U, dxhy, dyhx, cxp, cyp, cxm, cym, &
++          strain_rates_U_no_slip, strain_rates_U_free_slip, dxhy, dyhx, cxp, cyp, cxm, cym, &
+           iceTmask, iceUmask, iceEmask, iceNmask, &
+-          dyn_haloUpdate, fld2, fld3, fld4, strain_rates_U_free_slip
++          dyn_haloUpdate, fld2, fld3, fld4
+       use ice_dyn_evp1d, only: dyn_evp1d_run
+ 
+       real (kind=dbl_kind), intent(in) :: &
+@@ -315,6 +320,10 @@ subroutine evp (dt)
+ 
+       ! local variables
+ 
++      logical(kind=log_kind) :: &
++         avg_zeta, & ! visc_method logical
++         noslip      ! boundary_condition logical
++
+       integer (kind=int_kind) :: &
+          ksub           , & ! subcycle step
+          iblk           , & ! block index
+@@ -502,6 +511,10 @@ subroutine evp (dt)
+          endif
+       endif
+ 
++      ! attempt to be more efficient with logical inside ksub loop
++      avg_zeta = (visc_method == 'avg_zeta')
++      noslip   = (boundary_condition(1:7) == 'no_slip')
++
+       if (trim(grid_ice) == 'B') then
+          !$OMP PARALLEL DO PRIVATE(iblk,ilo,ihi,jlo,jhi,this_block,ij,i,j) SCHEDULE(runtime)
+          do iblk = 1, nblocks
+@@ -573,6 +586,14 @@ subroutine evp (dt)
+             jlo = this_block%jlo
+             jhi = this_block%jhi
+ 
++            ! ! coastal drag parameterisation prepartion
++            ! do j = jlo, jhi
++            !    do i = ilo, ihi
++            !       emass(i,j,iblk) = 0.5d0 * ( tmass(i,j,iblk) + tmass(i+1,j  ,iblk) )
++            !       nmass(i,j,iblk) = 0.5d0 * ( tmass(i,j,iblk) + tmass(i  ,j+1,iblk) )
++            !    enddo
++            ! enddo
++
+             call dyn_prep2 (nx_block,             ny_block,             &
+                             ilo, ihi,             jlo, jhi,             &
+                             icellT        (iblk), icellU        (iblk), &
+@@ -600,7 +621,9 @@ subroutine evp (dt)
+                             stress12_3(:,:,iblk), stress12_4(:,:,iblk), &
+                             uvel_init (:,:,iblk), vvel_init (:,:,iblk), &
+                             uvel      (:,:,iblk), vvel      (:,:,iblk), &
+-                            TbU       (:,:,iblk))
++                            TbU       (:,:,iblk),                       &
++                            KuxU      (:,:,iblk), KuyU      (:,:,iblk), &
++                            KuU       (:,:,iblk))
+ 
+             !-----------------------------------------------------------------
+             ! ice strength
+@@ -650,7 +673,9 @@ subroutine evp (dt)
+                             stress12_3(:,:,iblk), stress12_4(:,:,iblk), &
+                             uvelN_init(:,:,iblk), vvelN_init(:,:,iblk), &
+                             uvelN     (:,:,iblk), vvelN     (:,:,iblk), &
+-                            TbN       (:,:,iblk))
++                            TbN       (:,:,iblk),                       &
++                            KuxN      (:,:,iblk), KuyN      (:,:,iblk), &
++                            KuN       (:,:,iblk))
+ 
+             !-----------------------------------------------------------------
+             ! more preparation for dynamics on E grid
+@@ -683,7 +708,9 @@ subroutine evp (dt)
+                             stress12_3(:,:,iblk), stress12_4(:,:,iblk), &
+                             uvelE_init(:,:,iblk), vvelE_init(:,:,iblk), &
+                             uvelE     (:,:,iblk), vvelE     (:,:,iblk), &
+-                            TbE       (:,:,iblk))
++                            TbE       (:,:,iblk),                       &
++                            KuxE      (:,:,iblk), KuyE      (:,:,iblk), &
++                            KuE       (:,:,iblk))
+ 
+ 
+             do i=1,nx_block
+@@ -782,6 +809,30 @@ subroutine evp (dt)
+          call ice_HaloMask(halo_info_mask, halo_info, halomask)
+       endif
+ 
++      !-----------------------------------------------------------------
++      ! coastal drag function KuE/N
++      !-----------------------------------------------------------------
++      if (coastal_drag) then
++         if (grid_ice == "C") then
++            !$OMP PARALLEL DO PRIVATE(iblk) SCHEDULE(runtime)
++            do iblk = 1, nblocks
++               call coastal_drag_stress_factor(nx_block          , ny_block,         &
++                                               icellE  (iblk)    ,                   &
++                                               indxEi  (:,iblk)  , indxEj(:,iblk),   &
++                                               emass   (:,:,iblk),                   &
++                                               KuE     (:,:,iblk),                   &
++                                               F2E(:,:,iblk)                         )
++               call coastal_drag_stress_factor(nx_block          , ny_block,         &
++                                               icellN  (iblk)    ,                   &
++                                               indxNi  (:,iblk)  , indxNj(:,iblk),   &
++                                               nmass   (:,:,iblk),                   &
++                                               KuN     (:,:,iblk),                   &
++                                               F2N(:,:,iblk)                         )
++            enddo
++            !$OMP END PARALLEL DO
++         endif
++      endif
++
+       !-----------------------------------------------------------------
+       ! seabed stress factor TbU (TbU is part of Cb coefficient)
+       !-----------------------------------------------------------------
+@@ -951,40 +1002,41 @@ subroutine evp (dt)
+ 
+             !$OMP PARALLEL DO PRIVATE(iblk)
+             do iblk = 1, nblocks
+-
+             !-----------------------------------------------------------------
+             ! strain rates at U point
+             ! NOTE these are actually strain rates * area  (m^2/s)
+             !-----------------------------------------------------------------
+-               ! call strain_rates_U_free_slip (nx_block          , ny_block           , &
+-               !                      icellU      (iblk),                      &
+-               !                      indxUi    (:,iblk), indxUj     (:,iblk), &
+-               !                      uvelE   (:,:,iblk), vvelE    (:,:,iblk), &
+-               !                      uvelN   (:,:,iblk), vvelN    (:,:,iblk), &
+-               !                      uvel    (:,:,iblk), vvel     (:,:,iblk), &
+-               !                      dxE     (:,:,iblk), dyN      (:,:,iblk), &
+-               !                      dxU     (:,:,iblk), dyU      (:,:,iblk), &
+-               !                      ratiodxN(:,:,iblk), ratiodxNr(:,:,iblk), &
+-               !                      ratiodyE(:,:,iblk), ratiodyEr(:,:,iblk), &
+-               !                      epm     (:,:,iblk), npm      (:,:,iblk), &
+-               !                      divergU (:,:,iblk), tensionU (:,:,iblk), &
+-               !                      shearU  (:,:,iblk), deltaU   (:,:,iblk), &
+-               !                      ksub              , ndte                 )
+-               call strain_rates_U (nx_block          , ny_block           , &
+-                                    icellU      (iblk),                      &
+-                                    indxUi    (:,iblk), indxUj     (:,iblk), &
+-                                    uvelE   (:,:,iblk), vvelE    (:,:,iblk), &
+-                                    uvelN   (:,:,iblk), vvelN    (:,:,iblk), &
+-                                    uvel    (:,:,iblk), vvel     (:,:,iblk), &
+-                                    dxE     (:,:,iblk), dyN      (:,:,iblk), &
+-                                    dxU     (:,:,iblk), dyU      (:,:,iblk), &
+-                                    ratiodxN(:,:,iblk), ratiodxNr(:,:,iblk), &
+-                                    ratiodyE(:,:,iblk), ratiodyEr(:,:,iblk), &
+-                                    epm     (:,:,iblk), npm      (:,:,iblk), &
+-                                    divergU (:,:,iblk), tensionU (:,:,iblk), &
+-                                    shearU  (:,:,iblk), deltaU   (:,:,iblk), &
+-                                    ksub              , ndte                 )
+-
++               if (noslip) then
++                  call strain_rates_U_no_slip (nx_block          , ny_block           , &
++                                               icellU      (iblk),                      &
++                                               indxUi    (:,iblk), indxUj     (:,iblk), &
++                                               uvelE   (:,:,iblk), vvelE    (:,:,iblk), &
++                                               uvelN   (:,:,iblk), vvelN    (:,:,iblk), &
++                                               uvel    (:,:,iblk), vvel     (:,:,iblk), &
++                                               dxE     (:,:,iblk), dyN      (:,:,iblk), &
++                                               dxU     (:,:,iblk), dyU      (:,:,iblk), &
++                                               ratiodxN(:,:,iblk), ratiodxNr(:,:,iblk), &
++                                               ratiodyE(:,:,iblk), ratiodyEr(:,:,iblk), &
++                                               epm     (:,:,iblk), npm      (:,:,iblk), &
++                                               divergU (:,:,iblk), tensionU (:,:,iblk), &
++                                               shearU  (:,:,iblk), deltaU   (:,:,iblk), &
++                                               ksub              , ndte                 )
++               else
++                  call strain_rates_U_free_slip (nx_block          , ny_block           , &
++                                                 icellU      (iblk),                      &
++                                                 indxUi    (:,iblk), indxUj     (:,iblk), &
++                                                 uvelE   (:,:,iblk), vvelE    (:,:,iblk), &
++                                                 uvelN   (:,:,iblk), vvelN    (:,:,iblk), &
++                                                 uvel    (:,:,iblk), vvel     (:,:,iblk), &
++                                                 dxE     (:,:,iblk), dyN      (:,:,iblk), &
++                                                 dxU     (:,:,iblk), dyU      (:,:,iblk), &
++                                                 ratiodxN(:,:,iblk), ratiodxNr(:,:,iblk), &
++                                                 ratiodyE(:,:,iblk), ratiodyEr(:,:,iblk), &
++                                                 epm     (:,:,iblk), npm      (:,:,iblk), &
++                                                 divergU (:,:,iblk), tensionU (:,:,iblk), &
++                                                 shearU  (:,:,iblk), deltaU   (:,:,iblk), &
++                                                 ksub              , ndte                 )
++               end if
+             enddo  ! iblk
+             !$OMP END PARALLEL DO
+ 
+@@ -1016,10 +1068,10 @@ subroutine evp (dt)
+                                  field_loc_center, field_type_scalar, &
+                                  zetax2T, etax2T, stresspT, stressmT)
+ 
+-            if (visc_method == 'avg_strength') then
+-               call grid_average_X2Y('S', strength, 'T', strengthU, 'U')
+-            elseif (visc_method == 'avg_zeta') then
++            if (avg_zeta) then
+                call grid_average_X2Y('S', etax2T  , 'T', etax2U   , 'U')
++            else
++               call grid_average_X2Y('S', strength, 'T', strengthU, 'U')
+             endif
+ 
+             !$OMP PARALLEL DO PRIVATE(iblk)
+@@ -1076,7 +1128,8 @@ subroutine evp (dt)
+                               strintxE  (:,:,iblk), taubxE    (:,:,iblk), &
+                               uvelE_init(:,:,iblk),                       &
+                               uvelE     (:,:,iblk), vvelE     (:,:,iblk), &
+-                                 TbE       (:,:,iblk))
++                              TbE       (:,:,iblk),                       &
++                              KuxE      (:,:,iblk), KuE       (:,:,iblk))
+ 
+                 call stepv_C (nx_block,             ny_block,             & ! v, N point
+                               icellN        (iblk), Cdn_ocnN  (:,:,iblk), &
+@@ -1088,7 +1141,38 @@ subroutine evp (dt)
+                               strintyN  (:,:,iblk), taubyN    (:,:,iblk), &
+                               vvelN_init(:,:,iblk),                       &
+                               uvelN     (:,:,iblk), vvelN     (:,:,iblk), &
+-                              TbN       (:,:,iblk))
++                              TbN       (:,:,iblk),                       &
++                              KuxN      (:,:,iblk), KuN       (:,:,iblk))
++
++               if (ksub == ndte) then
++                  do j = 1, ny_block
++                     do i = 1, nx_block-1
++                        if (i >= 2 .and. j >= 2 .and. i <= nx_block-1 .and. j <= ny_block-1) then
++                           if ( (epm(i  ,j  , iblk) == c0) .or. (epm(i  ,j-1, iblk) == c0) .or. &
++                                (npm(i  ,j  , iblk) == c0) .or. (npm(i-1,j  , iblk) == c0) ) then
++                              !$OMP CRITICAL (IO_DIAG)
++                              write(nu_diag,'(a,3i6,1p,2e16.8)') 'E-coast AFTER step (blk,i,j): uE, vE =', &
++                              iblk, i, j, uvelE(i,j,iblk), vvelE(i,j,iblk)
++                              !$OMP END CRITICAL (IO_DIAG)
++                           end if
++                        end if
++                     end do
++                  end do
++                  do j = 1, ny_block-1
++                     do i = 1, nx_block
++                        if (i >= 2 .and. j >= 2 .and. i <= nx_block-1 .and. j <= ny_block-1) then
++                           if ( (epm(i  ,j  , iblk) == c0) .or. (epm(i  ,j-1, iblk) == c0) .or. &
++                                (npm(i  ,j  , iblk) == c0) .or. (npm(i-1,j  , iblk) == c0) ) then
++                              !$OMP CRITICAL (IO_DIAG)
++                              write(nu_diag,'(a,3i6,1p,2e16.8)') 'N-coast AFTER step (blk,i,j): vN, uN =', &
++                              iblk, i, j, vvelN(i,j,iblk), uvelN(i,j,iblk)
++                              !$OMP END CRITICAL (IO_DIAG)
++                           end if
++                        end if
++                     end do
++                  end do
++                  call flush(nu_diag)
++               end if
+             enddo
+             !$OMP END PARALLEL DO
+ 
+@@ -1105,6 +1189,43 @@ subroutine evp (dt)
+             uvelN(:,:,:) = uvelN(:,:,:)*npm(:,:,:)
+             vvelE(:,:,:) = vvelE(:,:,:)*epm(:,:,:)
+ 
++            ! -- DIAG 2: after E<->N reconstruction (last subcycle only) --
++            if (ksub == ndte) then
++               !$OMP PARALLEL DO PRIVATE(iblk,i,j)
++               do iblk = 1, nblocks
++                  ! E faces: normal=uvelE, tangential=vvelE
++                  do j = 1, ny_block
++                     do i = 1, nx_block-1
++                        if (i >= 2 .and. j >= 2 .and. i <= nx_block-1 .and. j <= ny_block-1) then
++                           if ( (epm(i  ,j  , iblk) == c0) .or. (epm(i  ,j-1, iblk) == c0) .or. &
++                                (npm(i  ,j  , iblk) == c0) .or. (npm(i-1,j  , iblk) == c0) ) then
++                              !$OMP CRITICAL (IO_DIAG)
++                              write(nu_diag,'(a,3i6,1p,2e16.8)') 'E-coast AFTER recon (blk,i,j): uE, vE =', &
++                              iblk, i, j, uvelE(i,j,iblk), vvelE(i,j,iblk)
++                              !$OMP END CRITICAL (IO_DIAG)
++                           end if
++                        end if
++                     end do
++                  end do
++                  ! N faces: normal=vvelN, tangential=uvelN
++                  do j = 1, ny_block-1
++                     do i = 1, nx_block
++                        if (i >= 2 .and. j >= 2 .and. i <= nx_block-1 .and. j <= ny_block-1) then
++                           if ( (epm(i  ,j  , iblk) == c0) .or. (epm(i  ,j-1, iblk) == c0) .or. &
++                                (npm(i  ,j  , iblk) == c0) .or. (npm(i-1,j  , iblk) == c0) ) then
++                              !$OMP CRITICAL (IO_DIAG)
++                              write(nu_diag,'(a,3i6,1p,2e16.8)') 'N-coast AFTER recon (blk,i,j): vN, uN =', &
++                              iblk, i, j, vvelN(i,j,iblk), uvelN(i,j,iblk)
++                              !$OMP END CRITICAL (IO_DIAG)
++                           end if
++                        end if
++                     end do
++                  end do
++               end do
++               !$OMP END PARALLEL DO
++               call flush(nu_diag)
++            end if
++
+             ! calls ice_haloUpdate, controls bundles and masks
+             call dyn_haloUpdate (halo_info,       halo_info_mask,    &
+                                  field_loc_Nface, field_type_vector, &
+@@ -1186,19 +1307,20 @@ subroutine evp (dt)
+             ! strain rates at U point
+             ! NOTE these are actually strain rates * area  (m^2/s)
+             !-----------------------------------------------------------------
+-               call strain_rates_U (nx_block           , ny_block           , &
+-                                                         icellU       (iblk), &
+-                                    indxUi     (:,iblk), indxUj     (:,iblk), &
+-                                    uvelE    (:,:,iblk), vvelE    (:,:,iblk), &
+-                                    uvelN    (:,:,iblk), vvelN    (:,:,iblk), &
+-                                    uvel     (:,:,iblk), vvel     (:,:,iblk), &
+-                                    dxE      (:,:,iblk), dyN      (:,:,iblk), &
+-                                    dxU      (:,:,iblk), dyU      (:,:,iblk), &
+-                                    ratiodxN (:,:,iblk), ratiodxNr(:,:,iblk), &
+-                                    ratiodyE (:,:,iblk), ratiodyEr(:,:,iblk), &
+-                                    epm      (:,:,iblk), npm      (:,:,iblk), &
+-                                    divergU  (:,:,iblk), tensionU (:,:,iblk), &
+-                                    shearU   (:,:,iblk), DeltaU   (:,:,iblk)  )
++               call strain_rates_U_no_slip (nx_block           , ny_block           , &
++                                                                  icellU       (iblk), &
++                                             indxUi     (:,iblk), indxUj     (:,iblk), &
++                                             uvelE    (:,:,iblk), vvelE    (:,:,iblk), &
++                                             uvelN    (:,:,iblk), vvelN    (:,:,iblk), &
++                                             uvel     (:,:,iblk), vvel     (:,:,iblk), &
++                                             dxE      (:,:,iblk), dyN      (:,:,iblk), &
++                                             dxU      (:,:,iblk), dyU      (:,:,iblk), &
++                                             ratiodxN (:,:,iblk), ratiodxNr(:,:,iblk), &
++                                             ratiodyE (:,:,iblk), ratiodyEr(:,:,iblk), &
++                                             epm      (:,:,iblk), npm      (:,:,iblk), &
++                                             divergU  (:,:,iblk), tensionU (:,:,iblk), &
++                                             shearU   (:,:,iblk), DeltaU   (:,:,iblk), &
++                                             ksub               , ndte  )
+ 
+                call stressCD_U     (nx_block           , ny_block           , &
+                                                          icellU       (iblk), &
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90 b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+index 6c12254..66c6e4d 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+@@ -25,9 +25,9 @@ module ice_dyn_shared
+       private
+       public :: set_evp_parameters, stepu, stepuv_CD, stepu_C, stepv_C, &
+                 principal_stress, init_dyn_shared, dyn_prep1, dyn_prep2, dyn_finish, &
+-                seabed_stress_factor_LKD, seabed_stress_factor_prob, &
++                seabed_stress_factor_LKD, seabed_stress_factor_prob, coastal_drag_stress_factor, &
+                 deformations, deformationsC_T, deformationsCD_T, &
+-                strain_rates, strain_rates_T, strain_rates_U, strain_rates_U_free_slip, &
++                strain_rates, strain_rates_T, strain_rates_U_no_slip, strain_rates_U_free_slip, &
+                 visc_replpress, &
+                 dyn_haloUpdate, &
+                 stack_fields, unstack_fields
+@@ -58,13 +58,14 @@ module ice_dyn_shared
+       ! other EVP parameters
+ 
+       character (len=char_len), public :: &
+-         yield_curve      , & ! 'ellipse' ('teardrop' needs further testing)
+-         visc_method      , & ! method for viscosity calc at U points (C, CD grids)
+-         seabed_stress_method ! method for seabed stress calculation
+-                              ! LKD: Lemieux et al. 2015, probabilistic: Dupont et al. 2022
++         yield_curve          , & ! 'ellipse' ('teardrop' needs further testing)
++         visc_method          , & ! method for viscosity calc at U points (C, CD grids)
++         seabed_stress_method , & ! method for seabed stress calculation
++                                  ! LKD: Lemieux et al. 2015, probabilistic: Dupont et al. 2022
++         boundary_condition       ! 'no_slip' (Dirchlet) or 'free_slip' (Neumann); boundary conditions
+ 
+       real (kind=dbl_kind), parameter, public :: &
+-         u0    = 5e-5_dbl_kind, & ! residual velocity for seabed stress (m/s)
++         !u0    = 5e-5_dbl_kind, & ! residual velocity for seabed stress (m/s)
+          cosw  = c1           , & ! cos(ocean turning angle)  ! turning angle = 0
+          sinw  = c0               ! sin(ocean turning angle)  ! turning angle = 0
+ 
+@@ -133,7 +134,7 @@ module ice_dyn_shared
+ 
+       ! seabed (basal) stress parameters and settings
+       logical (kind=log_kind), public :: &
+-         seabed_stress       ! if true, seabed stress for landfast on
++         seabed_stress  ! if true, seabed stress for landfast on
+ 
+       real (kind=dbl_kind), public :: &
+          k1              , & ! 1st free parameter for seabed1 grounding parameterization
+@@ -142,6 +143,18 @@ module ice_dyn_shared
+          threshold_hw        ! max water depth for grounding
+                              ! see keel data from Amundrud et al. 2004 (JGR)
+ 
++      ! coastal drag parameters and settings
++      logical (kind=log_kind), public :: &
++         coastal_drag, &     ! if true, coastal drag stress for landfast on
++         create_form_factors ! if true, create the coastal form factors using the coastline
++
++      ! character (len=char_len), public :: &
++      !    coastline_file       ! NetCDF of coastline
++
++      real(kind=dbl_kind), public :: &
++         Cs, &  ! static function coefficient; Liu et al. (2022) eq.13; 1.0*10^{−4} m/s^2
++         u0     ! residual velocity for coastal drag stress (and seabed stress) (m/s)
++
+       interface strain_rates_T
+          module procedure strain_rates_Tdt
+          module procedure strain_rates_Tdtsd
+@@ -590,7 +603,9 @@ subroutine dyn_prep2 (nx_block,   ny_block,   &
+                             stress12_3, stress12_4, &
+                             uvel_init,  vvel_init,  &
+                             uvel,       vvel,       &
+-                            TbU)
++                            TbU,                    &
++                            Kux,        Kuy,        &
++                            Ku                      )
+ 
+       integer (kind=int_kind), intent(in) :: &
+          nx_block, ny_block, & ! block dimensions
+@@ -639,6 +654,9 @@ subroutine dyn_prep2 (nx_block,   ny_block,   &
+          forcex  , & ! work array: combined atm stress and ocn tilt, x
+          forcey      ! work array: combined atm stress and ocn tilt, y
+ 
++      real(kind=dbl_kind), dimension(nx_block,ny_block), intent(out), optional :: &
++         Ku          ! coastal drag stress factor (N/m^2)
++
+       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
+          fm      , & ! Coriolis param. * mass in U-cell (kg/s)
+          stressp_1, stressp_2, stressp_3, stressp_4 , & ! sigma11+sigma22
+@@ -655,6 +673,9 @@ subroutine dyn_prep2 (nx_block,   ny_block,   &
+          taubx   , & ! seabed stress, x-direction (N/m^2)
+          tauby       ! seabed stress, y-direction (N/m^2)
+ 
++      real(kind=dbl_kind), dimension(nx_block,ny_block), intent(inout), optional :: &
++         Kux, Kuy    ! coastal drag stress factors in x- & y-directions (N/m^2)
++
+       ! local variables
+ 
+       integer (kind=int_kind) :: &
+@@ -682,6 +703,9 @@ subroutine dyn_prep2 (nx_block,   ny_block,   &
+          TbU      (i,j) = c0
+          taubx    (i,j) = c0
+          tauby    (i,j) = c0
++         if (present(Ku )) Ku (i,j) = c0
++         if (present(Kux)) Kux(i,j) = c0
++         if (present(Kuy)) Kuy(i,j) = c0
+ 
+          if (.not.iceTmask(i,j)) then
+             stressp_1 (i,j) = c0
+@@ -1051,14 +1075,15 @@ end subroutine stepuv_CD
+       subroutine stepu_C (nx_block,   ny_block, &
+                           icell,      Cw,       &
+                           indxi,      indxj,    &
+-                                      aiX,      &
++                          aiX,                  &
+                           uocn,       vocn,     &
+                           waterx,     forcex,   &
+                           massdti,    fm,       &
+                           strintx,    taubx,    &
+                           uvel_init,            &
+                           uvel,       vvel,     &
+-                          Tb)
++                          Tb,                   &
++                          Kux,        Ku        )
+ 
+       integer (kind=int_kind), intent(in) :: &
+          nx_block, ny_block, & ! block dimensions
+@@ -1080,11 +1105,13 @@ subroutine stepu_C (nx_block,   ny_block, &
+          fm      , & ! Coriolis param. * mass in e-cell (kg/s)
+          strintx , & ! divergence of internal ice stress, x (N/m^2)
+          Cw      , & ! ocean-ice neutral drag coefficient
+-         vvel        ! y-component of velocity (m/s) interpolated to E location
++         vvel    , & ! y-component of velocity (m/s) interpolated to E location
++         Ku          ! coastal (lateral) stress factor (N/m^2)
+ 
+       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
+          uvel    , & ! x-component of velocity (m/s)
+-         taubx       ! seabed stress, x-direction (N/m^2)
++         taubx   , & ! seabed stress, x-direction (N/m^2)
++         Kux         ! coastal (lateral) stress, x-direction (N/m^2)
+ 
+       ! local variables
+ 
+@@ -1097,7 +1124,8 @@ subroutine stepu_C (nx_block,   ny_block, &
+          cca,ccb,ccc,cc1    , & ! intermediate variables
+          taux               , & ! part of ocean stress term
+          Cb                 , & ! complete seabed (basal) stress coeff
+-         rhow                   !
++         rhow               , & ! density of water
++         Cl
+ 
+       character(len=*), parameter :: subname = '(stepu_C)'
+ 
+@@ -1125,23 +1153,22 @@ subroutine stepu_C (nx_block,   ny_block, &
+ 
+          ccc = sqrt(uold**2 + vold**2) + u0
+          Cb  = Tb(i,j) / ccc ! for seabed stress
+-         ! revp = 0 for classic evp, 1 for revised evp
+-         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb ! kg/m^2 s
+-
++         Cl  = Ku(i,j) / ccc ! for coastal drag
++         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb + Cl ! kg/m^2 s
+          ccb = fm(i,j) + sign(c1,fm(i,j)) * vrel * sinw ! kg/m^2 s
+ 
+          ! compute the velocity components
+-         cc1 = strintx(i,j) + forcex(i,j) + taux &
+-             + massdti(i,j)*(brlx*uold + revp*uvel_init(i,j))
+-
++         cc1 = strintx(i,j) + forcex(i,j) + taux + massdti(i,j)*(brlx*uold + revp*uvel_init(i,j))
+          uvel(i,j) = (ccb*vold + cc1) / cca ! m/s
+ 
+          ! calculate seabed stress component for outputs
+          ! only needed on last iteration.
+          taubx(i,j) = -uvel(i,j)*Cb
+ 
+-      enddo                     ! ij
++         ! calculate the coastal (lateral) drag stress component for output
++         Kux(i,j) = -uvel(i,j)*Cl
+ 
++      enddo                     ! ij
+       end subroutine stepu_C
+ 
+ !=======================================================================
+@@ -1154,10 +1181,11 @@ subroutine stepv_C (nx_block,   ny_block, &
+                           uocn,       vocn,     &
+                           watery,     forcey,   &
+                           massdti,    fm,       &
+-                          strinty,    tauby,    &
++                          strinty,    tauby,    & 
+                           vvel_init,            &
+                           uvel,       vvel,     &
+-                          Tb)
++                          Tb,                   &
++                          Kuy,         Ku       )
+ 
+       integer (kind=int_kind), intent(in) :: &
+          nx_block, ny_block, & ! block dimensions
+@@ -1179,11 +1207,13 @@ subroutine stepv_C (nx_block,   ny_block, &
+          fm      , & ! Coriolis param. * mass in n-cell (kg/s)
+          strinty , & ! divergence of internal ice stress, y (N/m^2)
+          Cw      , & ! ocean-ice neutral drag coefficient
+-         uvel        ! x-component of velocity (m/s) interpolated to N location
++         uvel    , & ! x-component of velocity (m/s) interpolated to N location
++         Ku          ! coastal (lateral) stress factor (N/m^2)
+ 
+       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
+          vvel    , & ! y-component of velocity (m/s)
+-         tauby       ! seabed stress, y-direction (N/m^2)
++         tauby   , & ! seabed stress, y-direction (N/m^2)
++         Kuy         ! coastal (lateral) stress, y-direction (N/m^2)
+ 
+       ! local variables
+ 
+@@ -1196,7 +1226,8 @@ subroutine stepv_C (nx_block,   ny_block, &
+          cca,ccb,ccc,cc2    , & ! intermediate variables
+          tauy               , & ! part of ocean stress term
+          Cb                 , & ! complete seabed (basal) stress coeff
+-         rhow                   !
++         rhow               , & ! density of water
++         Cl
+ 
+       character(len=*), parameter :: subname = '(stepv_C)'
+ 
+@@ -1224,25 +1255,223 @@ subroutine stepv_C (nx_block,   ny_block, &
+ 
+          ccc = sqrt(uold**2 + vold**2) + u0
+          Cb  = Tb(i,j) / ccc ! for seabed stress
+-         ! revp = 0 for classic evp, 1 for revised evp
+-         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb ! kg/m^2 s
+-
++         Cl  = Ku(i,j) / ccc ! for coastal drag
++         cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb + Cl ! kg/m^2 s
+          ccb = fm(i,j) + sign(c1,fm(i,j)) * vrel * sinw ! kg/m^2 s
+ 
+          ! compute the velocity components
+-         cc2 = strinty(i,j) + forcey(i,j) + tauy &
+-             + massdti(i,j)*(brlx*vold + revp*vvel_init(i,j))
+-
++         cc2 = strinty(i,j) + forcey(i,j) + tauy + massdti(i,j)*(brlx*vold + revp*vvel_init(i,j))
+          vvel(i,j) = (-ccb*uold + cc2) / cca
+ 
+          ! calculate seabed stress component for outputs
+          ! only needed on last iteration.
+          tauby(i,j) = -vvel(i,j)*Cb
+ 
++         ! calculate the coastal (lateral) drag stress component for output
++         Kuy(i,j) = -vvel(i,j)*Cl
++
+       enddo                     ! ij
+ 
+       end subroutine stepv_C
+ 
++! !=======================================================================
++! ! Integration of the momentum equation to find velocity u at E location on C grid
++
++!       subroutine stepu_C (nx_block,   ny_block, &
++!                           icell,      Cw,       &
++!                           indxi,      indxj,    &
++!                                       aiX,      &
++!                           uocn,       vocn,     &
++!                           waterx,     forcex,   &
++!                           massdti,    fm,       &
++!                           strintx,    taubx,    &
++!                           uvel_init,            &
++!                           uvel,       vvel,     &
++!                           Tb)
++
++!       integer (kind=int_kind), intent(in) :: &
++!          nx_block, ny_block, & ! block dimensions
++!          icell                 ! total count when ice[en]mask is true
++
++!       integer (kind=int_kind), dimension (nx_block*ny_block), intent(in) :: &
++!          indxi   , & ! compressed index in i-direction
++!          indxj       ! compressed index in j-direction
++
++!       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(in) :: &
++!          Tb,       & ! seabed stress factor (N/m^2)
++!          uvel_init,& ! x-component of velocity (m/s), beginning of timestep
++!          aiX     , & ! ice fraction on X-grid
++!          waterx  , & ! for ocean stress calculation, x (m/s)
++!          forcex  , & ! work array: combined atm stress and ocn tilt, x
++!          massdti , & ! mass of e-cell/dt (kg/m^2 s)
++!          uocn    , & ! ocean current, x-direction (m/s)
++!          vocn    , & ! ocean current, y-direction (m/s)
++!          fm      , & ! Coriolis param. * mass in e-cell (kg/s)
++!          strintx , & ! divergence of internal ice stress, x (N/m^2)
++!          Cw      , & ! ocean-ice neutral drag coefficient
++!          vvel        ! y-component of velocity (m/s) interpolated to E location
++
++!       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
++!          uvel    , & ! x-component of velocity (m/s)
++!          taubx       ! seabed stress, x-direction (N/m^2)
++
++!       ! local variables
++
++!       integer (kind=int_kind) :: &
++!          i, j, ij
++
++!       real (kind=dbl_kind) :: &
++!          uold, vold         , & ! old-time uvel, vvel
++!          vrel               , & ! relative ice-ocean velocity
++!          cca,ccb,ccc,cc1    , & ! intermediate variables
++!          taux               , & ! part of ocean stress term
++!          Cb                 , & ! complete seabed (basal) stress coeff
++!          rhow                   !
++
++!       character(len=*), parameter :: subname = '(stepu_C)'
++
++!       !-----------------------------------------------------------------
++!       ! integrate the momentum equation
++!       !-----------------------------------------------------------------
++
++!       call icepack_query_parameters(rhow_out=rhow)
++!       call icepack_warnings_flush(nu_diag)
++!       if (icepack_warnings_aborted()) call abort_ice(error_message=subname, &
++!          file=__FILE__, line=__LINE__)
++
++!       do ij =1, icell
++!          i = indxi(ij)
++!          j = indxj(ij)
++
++!          uold = uvel(i,j)
++!          vold = vvel(i,j)
++
++!          ! (magnitude of relative ocean current)*rhow*drag*aice
++!          vrel = aiX(i,j)*rhow*Cw(i,j)*sqrt((uocn(i,j) - uold)**2 + &
++!                                            (vocn(i,j) - vold)**2)  ! m/s
++!          ! ice/ocean stress
++!          taux = vrel*waterx(i,j) ! NOTE this is not the entire
++
++!          ccc = sqrt(uold**2 + vold**2) + u0
++!          Cb  = Tb(i,j) / ccc ! for seabed stress
++!          ! revp = 0 for classic evp, 1 for revised evp
++!          cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb ! kg/m^2 s
++
++!          ccb = fm(i,j) + sign(c1,fm(i,j)) * vrel * sinw ! kg/m^2 s
++
++!          ! compute the velocity components
++!          cc1 = strintx(i,j) + forcex(i,j) + taux &
++!              + massdti(i,j)*(brlx*uold + revp*uvel_init(i,j))
++
++!          uvel(i,j) = (ccb*vold + cc1) / cca ! m/s
++
++!          ! calculate seabed stress component for outputs
++!          ! only needed on last iteration.
++!          taubx(i,j) = -uvel(i,j)*Cb
++
++!       enddo                     ! ij
++
++!       end subroutine stepu_C
++
++! !=======================================================================
++! ! Integration of the momentum equation to find velocity v at N location on C grid
++
++!       subroutine stepv_C (nx_block,   ny_block, &
++!                           icell,      Cw,       &
++!                           indxi,      indxj,    &
++!                                       aiX,      &
++!                           uocn,       vocn,     &
++!                           watery,     forcey,   &
++!                           massdti,    fm,       &
++!                           strinty,    tauby,    &
++!                           vvel_init,            &
++!                           uvel,       vvel,     &
++!                           Tb)
++
++!       integer (kind=int_kind), intent(in) :: &
++!          nx_block, ny_block, & ! block dimensions
++!          icell                 ! total count when ice[en]mask is true
++
++!       integer (kind=int_kind), dimension (nx_block*ny_block), intent(in) :: &
++!          indxi   , & ! compressed index in i-direction
++!          indxj       ! compressed index in j-direction
++
++!       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(in) :: &
++!          Tb,       & ! seabed stress factor (N/m^2)
++!          vvel_init,& ! y-component of velocity (m/s), beginning of timestep
++!          aiX     , & ! ice fraction on X-grid
++!          watery  , & ! for ocean stress calculation, y (m/s)
++!          forcey  , & ! work array: combined atm stress and ocn tilt, y
++!          massdti , & ! mass of n-cell/dt (kg/m^2 s)
++!          uocn    , & ! ocean current, x-direction (m/s)
++!          vocn    , & ! ocean current, y-direction (m/s)
++!          fm      , & ! Coriolis param. * mass in n-cell (kg/s)
++!          strinty , & ! divergence of internal ice stress, y (N/m^2)
++!          Cw      , & ! ocean-ice neutral drag coefficient
++!          uvel        ! x-component of velocity (m/s) interpolated to N location
++
++!       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
++!          vvel    , & ! y-component of velocity (m/s)
++!          tauby       ! seabed stress, y-direction (N/m^2)
++
++!       ! local variables
++
++!       integer (kind=int_kind) :: &
++!          i, j, ij
++
++!       real (kind=dbl_kind) :: &
++!          uold, vold         , & ! old-time uvel, vvel
++!          vrel               , & ! relative ice-ocean velocity
++!          cca,ccb,ccc,cc2    , & ! intermediate variables
++!          tauy               , & ! part of ocean stress term
++!          Cb                 , & ! complete seabed (basal) stress coeff
++!          rhow                   !
++
++!       character(len=*), parameter :: subname = '(stepv_C)'
++
++!       !-----------------------------------------------------------------
++!       ! integrate the momentum equation
++!       !-----------------------------------------------------------------
++
++!       call icepack_query_parameters(rhow_out=rhow)
++!       call icepack_warnings_flush(nu_diag)
++!       if (icepack_warnings_aborted()) call abort_ice(error_message=subname, &
++!          file=__FILE__, line=__LINE__)
++
++!       do ij =1, icell
++!          i = indxi(ij)
++!          j = indxj(ij)
++
++!          uold = uvel(i,j)
++!          vold = vvel(i,j)
++
++!          ! (magnitude of relative ocean current)*rhow*drag*aice
++!          vrel = aiX(i,j)*rhow*Cw(i,j)*sqrt((uocn(i,j) - uold)**2 + &
++!                                            (vocn(i,j) - vold)**2)  ! m/s
++!          ! ice/ocean stress
++!          tauy = vrel*watery(i,j) ! NOTE this is not the entire ocn stress
++
++!          ccc = sqrt(uold**2 + vold**2) + u0
++!          Cb  = Tb(i,j) / ccc ! for seabed stress
++!          ! revp = 0 for classic evp, 1 for revised evp
++!          cca = (brlx + revp)*massdti(i,j) + vrel * cosw + Cb ! kg/m^2 s
++
++!          ccb = fm(i,j) + sign(c1,fm(i,j)) * vrel * sinw ! kg/m^2 s
++
++!          ! compute the velocity components
++!          cc2 = strinty(i,j) + forcey(i,j) + tauy &
++!              + massdti(i,j)*(brlx*vold + revp*vvel_init(i,j))
++
++!          vvel(i,j) = (-ccb*uold + cc2) / cca
++
++!          ! calculate seabed stress component for outputs
++!          ! only needed on last iteration.
++!          tauby(i,j) = -vvel(i,j)*Cb
++
++!       enddo                     ! ij
++
++!       end subroutine stepv_C
++
+ !=======================================================================
+ ! Calculation of the ice-ocean stress.
+ ! ...the sign will be reversed later...
+@@ -1325,6 +1554,54 @@ subroutine dyn_finish (nx_block, ny_block, &
+ 
+       end subroutine dyn_finish
+ 
++!=======================================================================
++! Compute coastal (lateral) drag "Ku" (for landfast ice) based on mean
++! sea ice thickness, drift speed, a static yet gridded Form factor (describing
++! roughness of coastaline), and two namelist parameters Cs and Cq. This is based
++! on the work done by:
++!
++! Yuqing Liu, Y.; Losch, M.; Hutter, N.; Longjian, M.
++! A New Parameterization of Coastal Drag to Simulate Landfast Ice in Deep 
++! Marginal Seas in the Arctic; J. Geophys. Res. Oceans, 127,
++! doi: https://doi.org/10.1029/2022JC018413 
++!
++! authors: dpath2o, JF Lemieux, Mathieu Plante, Martin Losch
++      subroutine coastal_drag_stress_factor(nx_block, ny_block, &
++                                            icellU  ,           &
++                                            indxUi  , indxUj  , &
++                                            imass   ,           &
++                                            Ku      ,           & 
++                                            F2                  ) 
++      character(len=*), parameter :: subname = '(coastal_drag_stress_factor)'
++      ! blocks:
++      integer (kind=int_kind), intent(in) :: &
++         nx_block, ny_block, & ! block dimensions
++         icellU                ! no. of cells where ice[uen]mask = 1
++      ! loop indeces
++      integer (kind=int_kind) :: i, j, ij
++      ! directional (grid) indeces:
++      integer (kind=int_kind), dimension (nx_block*ny_block), intent(in) :: &
++         indxUi, & ! compressed index in i-direction
++         indxUj    ! compressed index in j-direction
++      ! sea ice variables: 
++      real (kind=dbl_kind), dimension (nx_block,ny_block), intent(in) :: &
++         imass, & ! total mass of sea ice (includes snow) at E or N grid points
++         F2       ! coastline form factor -- computed offline; (N/m^2)
++      ! compute Ku at each grid point 
++      ! (away from the coast it should go to zero as F2 goes to zero)
++      real (kind=dbl_kind), dimension (nx_block,ny_block), intent(inout) :: &
++         Ku       ! coastal drag stress factor (N/m^2)
++      ! (optional but handy: print once on master)
++      ! if (my_task == master_task) then
++      !    write(nu_diag, '(a,2f12.5)') 'ice_dyn_shared.F90 F2(min,max)=', minval(F2), maxval(F2)
++      ! endif
++      do ij = 1, icellU
++         i       = indxUi(ij)
++         j       = indxUj(ij)
++         Ku(i,j) = imass(i,j) * F2(i,j) * Cs
++      enddo ! ij
++      end subroutine coastal_drag_stress_factor
++
+ !=======================================================================
+ ! Computes seabed (basal) stress factor TbU (landfast ice) based on mean
+ ! thickness and bathymetry data. LKD refers to linear keel draft. This
+@@ -2277,26 +2554,26 @@ end subroutine strain_rates_Tdt
+ ! author: JF Lemieux, ECCC
+ ! Nov 2021
+ 
+-      subroutine strain_rates_U (nx_block,   ny_block,  &
+-                                 icellU,                &
+-                                 indxUi,     indxUj,    &
+-                                 uvelE,      vvelE,     &
+-                                 uvelN,      vvelN,     &
+-                                 uvelU,      vvelU,     &
+-                                 dxE,        dyN,       &
+-                                 dxU,        dyU,       &
+-                                 ratiodxN,   ratiodxNr, &
+-                                 ratiodyE,   ratiodyEr, &
+-                                 epm,        npm,       &
+-                                 divergU,    tensionU,  &
+-                                 shearU,     DeltaU,    &
+-                                 ksub,       ndte       )
++      subroutine strain_rates_U_no_slip (nx_block,   ny_block,  &
++                                          icellU,                &
++                                          indxUi,     indxUj,    &
++                                          uvelE,      vvelE,     &
++                                          uvelN,      vvelN,     &
++                                          uvelU,      vvelU,     &
++                                          dxE,        dyN,       &
++                                          dxU,        dyU,       &
++                                          ratiodxN,   ratiodxNr, &
++                                          ratiodyE,   ratiodyEr, &
++                                          epm,        npm,       &
++                                          divergU,    tensionU,  &
++                                          shearU,     DeltaU,    &
++                                          ksub,       ndte       )
+ 
+       integer (kind=int_kind), intent(in) :: &
+          nx_block, ny_block, & ! block dimensions
+          icellU
+ 
+-      integer(kind=int_kind), intent(in), optional :: ksub, ndte
++      integer(kind=int_kind), intent(in) :: ksub, ndte
+ 
+       integer (kind=int_kind), dimension (nx_block*ny_block), intent(in) :: &
+          indxUi   , & ! compressed index in i-direction
+@@ -2388,26 +2665,23 @@ subroutine strain_rates_U (nx_block,   ny_block,  &
+ 
+          ! Delta (in the denominator of zeta, eta)
+          DeltaU(i,j)   = sqrt(divergU(i,j)**2 + e_factor*(tensionU(i,j)**2 + shearU(i,j)**2))
+-
+-      enddo
+-
+-      ! ---------- Diagnostics: print coastal U only (last subcycle) ----------
+-      if (ksub == ndte) then
+-         do j = 2, ny_block-1
+-            do i = 2, nx_block-1
+-               ! U(i,j) is “coastal” if any of its four surrounding faces is land
+-                if ( epm(i  ,j  ) == c0 .or. epm(i  ,j-1) == c0 .or. &
+-                     npm(i  ,j  ) == c0 .or. npm(i-1,j  ) == c0 ) then
++         ! ---------- Diagnostics: print coastal U only (last subcycle) ----------
++         if (ksub == ndte) then
++            ! U(i,j) is the NE corner of T(i,j). It is "coastal" if any of the
++            ! four faces meeting at the corner are land (mask==0).
++            ! Adjacent faces around U(i,j): E(i,j), E(i,j-1), N(i,j), N(i-1,j)
++            if (i >= 2 .and. j >= 2 .and. i <= nx_block-1 .and. j <= ny_block-1) then
++               if ( (epm(i  ,j  ) == c0) .or. (epm(i  ,j-1) == c0) .or. &
++                    (npm(i  ,j  ) == c0) .or. (npm(i-1,j  ) == c0) ) then
+                   !$OMP CRITICAL (IO_DIAG)
+                   write(nu_diag,'(a,2i6,1p,e16.8)') 'no-slip U-coast shearU  (i,j)=', i, j, shearU(i,j)
+                   !$OMP END CRITICAL (IO_DIAG)
+                end if
+-            end do
+-         end do
+-         call flush(nu_diag)
+-      end if
+-
+-      end subroutine strain_rates_U
++            end if
++         end if
++      enddo
++      if (ksub == ndte) call flush(nu_diag)
++      end subroutine strain_rates_U_no_slip
+ 
+ !=======================================================================
+ ! Compute strain rates at the U point — FREE-SLIP (Neumann)
+@@ -2423,7 +2697,6 @@ end subroutine strain_rates_U
+ !    continuation so that the normal derivative of the tangential
+ !    component vanishes at the wall.
+ !  - Signature kept identical to the no-slip routine.
+-!=======================================================================
+       subroutine strain_rates_U_free_slip(nx_block, ny_block,  &
+                                           icellU,              &
+                                           indxUi,   indxUj,    &
+@@ -2489,24 +2762,22 @@ subroutine strain_rates_U_free_slip(nx_block, ny_block,  &
+             ! shear = 2 e_12
+             shearU(i,j) =  dxU(i,j) * (uEijp1 - uEij) - uvelU(i,j) * (dxE(i  ,j+1) - dxE(i,j))  &
+                         +  dyU(i,j) * (vNip1j - vNij) - vvelU(i,j) * (dyN(i+1,j  ) - dyN(i,j))
+-         end do
+-
+          ! ---------- Diagnostics: print coastal U only (last subcycle) ----------
+          if (ksub == ndte) then
+-            do j = 2, ny_block-1
+-               do i = 2, nx_block-1
+-                  ! U(i,j) is “coastal” if any of its four surrounding faces is land
+-                  if ( epm(i  ,j  ) == c0 .or. epm(i  ,j-1) == c0 .or. &
+-                     npm(i  ,j  ) == c0 .or. npm(i-1,j  ) == c0 ) then
+-                     !$OMP CRITICAL (IO_DIAG)
+-                     write(nu_diag,'(a,2i6,1p,e16.8)') 'free-slip U-coast shearU  (i,j)=', i, j, shearU(i,j)
+-                     !$OMP END CRITICAL (IO_DIAG)
+-                  end if
+-               end do
+-            end do
+-            call flush(nu_diag)
++            ! U(i,j) is the NE corner of T(i,j). It is "coastal" if any of the
++            ! four faces meeting at the corner are land (mask==0).
++            ! Adjacent faces around U(i,j): E(i,j), E(i,j-1), N(i,j), N(i-1,j)
++            if (i >= 2 .and. j >= 2 .and. i <= nx_block-1 .and. j <= ny_block-1) then
++               if ( (epm(i  ,j  ) == c0) .or. (epm(i  ,j-1) == c0) .or. &
++                    (npm(i  ,j  ) == c0) .or. (npm(i-1,j  ) == c0) ) then
++                  !$OMP CRITICAL (IO_DIAG)
++                  write(nu_diag,'(a,2i6,1p,e16.8)') 'free-slip U-coast shearU  (i,j)=', i, j, shearU(i,j)
++                  !$OMP END CRITICAL (IO_DIAG)
++               end if
++            end if
+          end if
+-
++      enddo
++      if (ksub == ndte) call flush(nu_diag)
+       end subroutine strain_rates_U_free_slip
+ 
+ !=======================================================================
+diff --git a/cicecore/cicedyn/general/ice_flux.F90 b/cicecore/cicedyn/general/ice_flux.F90
+index 7d3277f..c0b07e0 100644
+--- a/cicecore/cicedyn/general/ice_flux.F90
++++ b/cicecore/cicedyn/general/ice_flux.F90
+@@ -112,10 +112,13 @@ module ice_flux
+          dardg1dt, & ! rate of area loss by ridging ice (1/s)
+          dardg2dt, & ! rate of area gain by new ridges (1/s)
+          dvirdgdt, & ! rate of ice volume ridged (m/s)
+-         opening !, & ! rate of opening due to divergence/shear (1/s)
+-         ! dpath2o
+-         ! KuxN, KuyN, KuxE, KuyE, & ! coastal drag stress components on C-grid (N/m^2)
+-         ! shearU
++         opening,  & ! rate of opening due to divergence/shear (1/s)
++         KuxU,     & !
++         KuyU,     & ! 
++         KuxN,     & ! coastal drag stress components (N/m^2), x-direction N-points
++         KuyN,     & ! coastal drag stress components (N/m^2), y-direction N-points
++         KuxE,     & ! coastal drag stress components (N/m^2), x-direction E-points
++         KuyE        ! coastal drag stress components (N/m^2), y-direction E-points
+ 
+       real (kind=dbl_kind), dimension (:,:,:,:), allocatable, public :: &
+        ! ridging diagnostics in categories
+@@ -150,9 +153,10 @@ module ice_flux
+          fmE      , & ! Coriolis param. * mass in E-cell (kg/s)
+          TbE      , & ! factor for seabed stress (N/m^2)
+          fmN      , & ! Coriolis param. * mass in N-cell (kg/s)
+-         TbN      !, & ! factor for seabed stress (N/m^2)
+-         ! dpath2o
+-         ! KuN, KuE     ! coastal drag stress on C-grid component locations (N/m^2)
++         TbN      , & ! factor for seabed stress (N/m^2)
++         KuU      , & ! 
++         KuN      , & ! coastal drag stress (N/m^2) at N-points
++         KuE          ! coastal drag stress (N/m^2) at E-points
+ 
+       !-----------------------------------------------------------------
+       ! Thermodynamic component
+@@ -662,14 +666,13 @@ subroutine alloc_flux
+          stresspU   (nx_block,ny_block,max_blocks), & ! sigma11+sigma22
+          stressmU   (nx_block,ny_block,max_blocks), & ! sigma11-sigma22
+          stress12U  (nx_block,ny_block,max_blocks), & ! sigma12
+-         ! dpath2o
+-         ! KuN        (nx_block,ny_block,max_blocks), & ! coastal drag stress factor at N points (landfast ice)
+-         ! KuxN       (nx_block,ny_block,max_blocks), & ! coastal drag stress (x) at N points (N/m^2)
+-         ! KuyN       (nx_block,ny_block,max_blocks), & ! coastal drag stress (y) at N points (N/m^2)
+-         ! KuE        (nx_block,ny_block,max_blocks), & ! coastal drag stress factor at E points (landfast ice)
+-         ! KuxE       (nx_block,ny_block,max_blocks), & ! coastal drag stress (x) at E points (N/m^2)
+-         ! KuyE       (nx_block,ny_block,max_blocks), & ! coastal drag stress (y) at E points (N/m^2)
+-         ! shearU     (nx_block,ny_block,max_blocks), & !
++         KuU        (nx_block,ny_block,max_blocks), & ! coastal drag stress factor at U points (landfast ice)
++         KuN        (nx_block,ny_block,max_blocks), & ! coastal drag stress factor at N points (landfast ice)
++         KuxN       (nx_block,ny_block,max_blocks), & ! coastal drag stress (x) at N points (N/m^2)
++         KuyN       (nx_block,ny_block,max_blocks), & ! coastal drag stress (y) at N points (N/m^2)
++         KuE        (nx_block,ny_block,max_blocks), & ! coastal drag stress factor at E points (landfast ice)
++         KuxE       (nx_block,ny_block,max_blocks), & ! coastal drag stress (x) at E points (N/m^2)
++         KuyE       (nx_block,ny_block,max_blocks), & ! coastal drag stress (y) at E points (N/m^2)
+          stat=ierr)
+       if (ierr/=0) call abort_ice('(alloc_flux): Out of memory (C or CD grid)')
+ 
+@@ -1151,7 +1154,7 @@ subroutine init_history_dyn
+       vort    (:,:,:) = c0
+       taubxU  (:,:,:) = c0
+       taubyU  (:,:,:) = c0
+-      strength(:,:,:) = c0
++      strength (:,:,:) = c0
+       strocnxU(:,:,:) = c0
+       strocnyU(:,:,:) = c0
+       strairxU(:,:,:) = c0
+@@ -1209,14 +1212,13 @@ subroutine init_history_dyn
+          strintyN   (:,:,:) = c0
+          fmN        (:,:,:) = c0
+          TbN        (:,:,:) = c0
+-         ! dpath2o
+-         ! KuN        (:,:,:) = c0
+-         ! KuE        (:,:,:) = c0
+-         ! KuxN       (:,:,:) = c0
+-         ! KuyN       (:,:,:) = c0
+-         ! KuxE       (:,:,:) = c0
+-         ! KuyE       (:,:,:) = c0
+-         ! shearU     (:,:,:) = c0
++         KuU        (:,:,:) = c0
++         KuN        (:,:,:) = c0
++         KuE        (:,:,:) = c0
++         KuxN       (:,:,:) = c0
++         KuyN       (:,:,:) = c0
++         KuxE       (:,:,:) = c0
++         KuyE       (:,:,:) = c0
+       end if
+       end subroutine init_history_dyn
+ 
+diff --git a/cicecore/cicedyn/general/ice_init.F90 b/cicecore/cicedyn/general/ice_init.F90
+index f716e59..fae7ae3 100644
+--- a/cicecore/cicedyn/general/ice_init.F90
++++ b/cicecore/cicedyn/general/ice_init.F90
+@@ -114,16 +114,19 @@ subroutine input_data
+           grid_ocn, grid_ocn_thrm, grid_ocn_dynu, grid_ocn_dynv, &
+           grid_atm, grid_atm_thrm, grid_atm_dynu, grid_atm_dynv, &
+           dxrect, dyrect, dxscale, dyscale, scale_dxdy, &
+-          lonrefrect, latrefrect, save_ghte_ghtn
++          lonrefrect, latrefrect, save_ghte_ghtn, &
++          build_F2_form_factors_box_grid, F2E, F2N
+       use ice_dyn_shared, only: &
+           ndte, kdyn, revised_evp, yield_curve, &
+           evp_algorithm, visc_method,     &
+-          seabed_stress, seabed_stress_method,  &
++          seabed_stress, seabed_stress_method, &
++          boundary_condition, &
+           k1, k2, alphab, threshold_hw, Ktens,  &
+           e_yieldcurve, e_plasticpot, coriolis, &
+           ssh_stress, kridge, brlx, arlx,       &
+           deltaminEVP, deltaminVP, capping,     &
+-          elasticDamp, dyn_area_min, dyn_mass_min
++          elasticDamp, dyn_area_min, dyn_mass_min, &
++          coastal_drag, boundary_condition, create_form_factors, coastal_drag_stress_factor, Cs, u0
+       use ice_dyn_vp, only: &
+           maxits_nonlin, precond, dim_fgmres, dim_pgmres, maxits_fgmres, &
+           maxits_pgmres, monitor_nonlin, monitor_fgmres, &
+@@ -244,6 +247,7 @@ subroutine input_data
+ 
+ 
+       namelist /dynamics_nml/ &
++        boundary_condition, coastal_drag, Cs, u0, create_form_factors,  &
+         kdyn,           ndte,           revised_evp,    yield_curve,    &
+         evp_algorithm,  elasticDamp,                                    &
+         brlx,           arlx,           ssh_stress,                     &
+@@ -406,65 +410,72 @@ subroutine input_data
+ 
+       kitd = 1           ! type of itd conversions (0 = delta, 1 = linear)
+       kcatbound = 1      ! category boundary formula (0 = old, 1 = new, etc)
+-      kdyn = 1           ! type of dynamics (-1, 0 = off, 1 = evp, 2 = eap, 3 = vp)
+-      ndtd = 1           ! dynamic time steps per thermodynamic time step
+-      ndte = 120         ! subcycles per dynamics timestep:  ndte=dt_dyn/dte
+-      evp_algorithm = 'standard_2d'  ! EVP kernel (standard_2d=standard cice evp; shared_mem_1d=1d shared memory and no mpi
+-      elasticDamp = 0.36_dbl_kind    ! coefficient for calculating the parameter E
+-      save_ghte_ghtn = .false.       ! if true, save global hte and htn (global ext.)
+-      brlx   = 300.0_dbl_kind ! revised_evp values. Otherwise overwritten in ice_dyn_shared
+-      arlx   = 300.0_dbl_kind ! revised_evp values. Otherwise overwritten in ice_dyn_shared
+-      revised_evp = .false.   ! if true, use revised procedure for evp dynamics
+-      yield_curve = 'ellipse' ! yield curve
+-      kstrength = 1           ! 1 = Rothrock 75 strength, 0 = Hibler 79
+-      Pstar = 2.75e4_dbl_kind ! constant in Hibler strength formula (kstrength = 0)
+-      Cstar = 20._dbl_kind    ! constant in Hibler strength formula (kstrength = 0)
+-      dyn_area_min = p001     ! minimum ice area concentration to activate dynamics
+-      dyn_mass_min = p01      ! minimum ice mass to activate dynamics (kg/m^2)
+-      krdg_partic = 1         ! 1 = new participation, 0 = Thorndike et al 75
+-      krdg_redist = 1         ! 1 = new redistribution, 0 = Hibler 80
+-      mu_rdg = 3              ! e-folding scale of ridged ice, krdg_partic=1 (m^0.5)
+-      Cf = 17.0_dbl_kind      ! ratio of ridging work to PE change in ridging
+-      ksno = 0.3_dbl_kind     ! snow thermal conductivity
+-      dxrect = 0.0_dbl_kind   ! user defined grid spacing in cm in x direction
+-      dyrect = 0.0_dbl_kind   ! user defined grid spacing in cm in y direction
+-      lonrefrect = -156.50_dbl_kind  ! lower left corner lon for rectgrid
+-      latrefrect =   71.35_dbl_kind  ! lower left corner lat for rectgrid
+-      scale_dxdy = .false.    ! apply dxscale, dyscale to rectgrid
+-      dxscale = 1.0_dbl_kind   ! user defined rectgrid x-grid scale factor (e.g., 1.02)
+-      dyscale = 1.0_dbl_kind   ! user defined rectgrid y-grid scale factor (e.g., 1.02)
+-      close_boundaries = .false.   ! true = set land on edges of grid
+-      seabed_stress= .false.  ! if true, seabed stress for landfast is on
+-      seabed_stress_method  = 'LKD'! LKD = Lemieux et al 2015, probabilistic = Dupont et al. 2022
+-      k1 = 7.5_dbl_kind       ! 1st free parameter for landfast parameterization
+-      k2 = 15.0_dbl_kind      ! 2nd free parameter (N/m^3) for landfast parametrization
+-      alphab = 20.0_dbl_kind  ! alphab=Cb factor in Lemieux et al 2015
+-      threshold_hw = 30.0_dbl_kind ! max water depth for grounding
+-      Ktens = 0.0_dbl_kind    ! T=Ktens*P (tensile strength: see Konig and Holland, 2010)
+-      e_yieldcurve = 2.0_dbl_kind  ! VP aspect ratio of elliptical yield curve
+-      e_plasticpot = 2.0_dbl_kind  ! VP aspect ratio of elliptical plastic potential
+-      visc_method = 'avg_zeta' ! calc viscosities at U point: avg_strength, avg_zeta
+-      deltaminEVP = 1e-11_dbl_kind ! minimum delta for viscosities (EVP, Hunke 2001)
+-      deltaminVP  = 2e-9_dbl_kind  ! minimum delta for viscosities (VP, Hibler 1979)
+-      capping_method  = 'max'  ! method for capping of viscosities (max=Hibler 1979,sum=Kreyscher2000)
+-      maxits_nonlin = 10       ! max nb of iteration for nonlinear solver
+-      precond = 'pgmres'       ! preconditioner for fgmres: 'ident' (identity), 'diag' (diagonal),
+-                               ! 'pgmres' (Jacobi-preconditioned GMRES)
+-      dim_fgmres = 50          ! size of fgmres Krylov subspace
+-      dim_pgmres = 5           ! size of pgmres Krylov subspace
+-      maxits_fgmres = 50       ! max nb of iteration for fgmres
+-      maxits_pgmres = 5        ! max nb of iteration for pgmres
+-      monitor_nonlin = .false. ! print nonlinear residual norm
+-      monitor_fgmres = .false. ! print fgmres residual norm
+-      monitor_pgmres = .false. ! print pgmres residual norm
+-      ortho_type = 'mgs'       ! orthogonalization procedure 'cgs' or 'mgs'
+-      reltol_nonlin = 1e-8_dbl_kind ! nonlinear stopping criterion: reltol_nonlin*res(k=0)
+-      reltol_fgmres = 1e-1_dbl_kind ! fgmres stopping criterion: reltol_fgmres*res(k)
+-      reltol_pgmres = 1e-6_dbl_kind ! pgmres stopping criterion: reltol_pgmres*res(k)
+-      algo_nonlin = 'picard'        ! nonlinear algorithm: 'picard' (Picard iteration), 'anderson' (Anderson acceleration)
+-      fpfunc_andacc = 1        ! fixed point function for Anderson acceleration:
+-                               ! 1: g(x) = FMGRES(A(x),b(x)), 2: g(x) = x - A(x)x + b(x)
+-      dim_andacc = 5           ! size of Anderson minimization matrix (number of saved previous residuals)
++
++      ! DYNAMICS
++      boundary_condition    = 'no_slip'       ! 'no_slip' (Dirchlet) or 'free_slip' (Neumann); boundary conditions
++      coastal_drag          = .false.         ! if true, enable coastal drag parameterisation for landfast ice
++      Cs                    = 1.0e-4_dbl_kind ! see Liu et al. (2022) section 3.3
++      u0                    = 5.0e-4_dbl_kind ! see Lemieux et al. (2015) section 6
++      create_form_factors   = .false.         ! creates form factors for box grid (test case)
++      kdyn                  = 1               ! type of dynamics (-1, 0 = off, 1 = evp, 2 = eap, 3 = vp)
++      ndtd                  = 1               ! dynamic time steps per thermodynamic time step
++      ndte                  = 120             ! subcycles per dynamics timestep:  ndte=dt_dyn/dte
++      evp_algorithm         = 'standard_2d'   ! EVP kernel (standard_2d=standard cice evp; shared_mem_1d=1d shared memory and no mpi
++      elasticDamp           = 0.36_dbl_kind   ! coefficient for calculating the parameter E
++      save_ghte_ghtn        = .false.         ! if true, save global hte and htn (global ext.)
++      brlx                  = 300.0_dbl_kind  ! revised_evp values. Otherwise overwritten in ice_dyn_shared
++      arlx                  = 300.0_dbl_kind  ! revised_evp values. Otherwise overwritten in ice_dyn_shared
++      revised_evp           = .false.         ! if true, use revised procedure for evp dynamics
++      yield_curve           = 'ellipse'       ! yield curve
++      kstrength             = 1               ! 1 = Rothrock 75 strength, 0 = Hibler 79
++      Pstar                 = 2.75e4_dbl_kind ! constant in Hibler strength formula (kstrength = 0)
++      Cstar                 = 20._dbl_kind    ! constant in Hibler strength formula (kstrength = 0)
++      dyn_area_min          = p001            ! minimum ice area concentration to activate dynamics
++      dyn_mass_min          = p01             ! minimum ice mass to activate dynamics (kg/m^2)
++      krdg_partic           = 1               ! 1 = new participation, 0 = Thorndike et al 75
++      krdg_redist           = 1               ! 1 = new redistribution, 0 = Hibler 80
++      mu_rdg                = 3               ! e-folding scale of ridged ice, krdg_partic=1 (m^0.5)
++      Cf                    = 17.0_dbl_kind   ! ratio of ridging work to PE change in ridging
++      ksno                  = 0.3_dbl_kind    ! snow thermal conductivity
++      dxrect                = 0.0_dbl_kind    ! user defined grid spacing in cm in x direction
++      dyrect                = 0.0_dbl_kind    ! user defined grid spacing in cm in y direction
++      lonrefrect            = -156.50_dbl_kind! lower left corner lon for rectgrid
++      latrefrect            =   71.35_dbl_kind! lower left corner lat for rectgrid
++      scale_dxdy            = .false.         ! apply dxscale, dyscale to rectgrid
++      dxscale               = 1.0_dbl_kind    ! user defined rectgrid x-grid scale factor (e.g., 1.02)
++      dyscale               = 1.0_dbl_kind    ! user defined rectgrid y-grid scale factor (e.g., 1.02)
++      close_boundaries      = .false.         ! true = set land on edges of grid
++      seabed_stress         = .false.         ! if true, seabed stress for landfast is on
++      seabed_stress_method  = 'LKD'           ! LKD = Lemieux et al 2015, probabilistic = Dupont et al. 2022
++      k1                    = 7.5_dbl_kind    ! 1st free parameter for landfast parameterization
++      k2                    = 15.0_dbl_kind   ! 2nd free parameter (N/m^3) for landfast parametrization
++      alphab                = 20.0_dbl_kind   ! alphab=Cb factor in Lemieux et al 2015
++      threshold_hw          = 30.0_dbl_kind   ! max water depth for grounding
++      Ktens                 = 0.0_dbl_kind    ! T=Ktens*P (tensile strength: see Konig and Holland, 2010)
++      e_yieldcurve          = 2.0_dbl_kind    ! VP aspect ratio of elliptical yield curve
++      e_plasticpot          = 2.0_dbl_kind    ! VP aspect ratio of elliptical plastic potential
++      visc_method           = 'avg_zeta'      ! calc viscosities at U point: avg_strength, avg_zeta
++      deltaminEVP           = 1e-11_dbl_kind  ! minimum delta for viscosities (EVP, Hunke 2001)
++      deltaminVP            = 2e-9_dbl_kind   ! minimum delta for viscosities (VP, Hibler 1979)
++      capping_method        = 'max'           ! method for capping of viscosities (max=Hibler 1979,sum=Kreyscher2000)
++      maxits_nonlin         = 10              ! max nb of iteration for nonlinear solver
++      precond               = 'pgmres'        ! preconditioner for fgmres: 'ident' (identity), 'diag' (diagonal),
++                                              ! 'pgmres' (Jacobi-preconditioned GMRES)
++      dim_fgmres            = 50              ! size of fgmres Krylov subspace
++      dim_pgmres            = 5               ! size of pgmres Krylov subspace
++      maxits_fgmres         = 50              ! max nb of iteration for fgmres
++      maxits_pgmres         = 5               ! max nb of iteration for pgmres
++      monitor_nonlin        = .false.         ! print nonlinear residual norm
++      monitor_fgmres        = .false.         ! print fgmres residual norm
++      monitor_pgmres        = .false.         ! print pgmres residual norm
++      ortho_type            = 'mgs'           ! orthogonalization procedure 'cgs' or 'mgs'
++      reltol_nonlin         = 1e-8_dbl_kind   ! nonlinear stopping criterion: reltol_nonlin*res(k=0)
++      reltol_fgmres         = 1e-1_dbl_kind   ! fgmres stopping criterion: reltol_fgmres*res(k)
++      reltol_pgmres         = 1e-6_dbl_kind   ! pgmres stopping criterion: reltol_pgmres*res(k)
++      algo_nonlin           = 'picard'        ! nonlinear algorithm: 'picard' (Picard iteration), 'anderson' (Anderson acceleration)
++      fpfunc_andacc         = 1               ! fixed point function for Anderson acceleration:
++                                              ! 1: g(x) = FMGRES(A(x),b(x)), 2: g(x) = x - A(x)x + b(x)
++      dim_andacc            = 5               ! size of Anderson minimization matrix (number of saved previous residuals)
+       reltol_andacc = 1e-6_dbl_kind  ! relative tolerance for Anderson acceleration
+       damping_andacc = 0       ! damping factor for Anderson acceleration
+       start_andacc = 0         ! acceleration delay factor (acceleration starts at this iteration)
+@@ -1018,6 +1029,14 @@ subroutine input_data
+       call broadcast_scalar(kmt_file,             master_task)
+       call broadcast_scalar(kitd,                 master_task)
+       call broadcast_scalar(kcatbound,            master_task)
++      call broadcast_scalar(boundary_condition,   master_task)
++      call broadcast_scalar(coastal_drag,         master_task)
++      call broadcast_scalar(Cs,                   master_task)
++      call broadcast_scalar(u0,                   master_task)
++      call broadcast_scalar(create_form_factors,  master_task)
++      if (coastal_drag .and. create_form_factors) then
++         write(nu_diag,'(a)') ' Using coastal form factor builder to construct F2E/F2N'
++      endif
+       call broadcast_scalar(kdyn,                 master_task)
+       call broadcast_scalar(ndtd,                 master_task)
+       call broadcast_scalar(ndte,                 master_task)
+@@ -1456,6 +1475,13 @@ subroutine input_data
+       endif
+ 
+       if (grid_ice == 'C' .or. grid_ice == 'CD') then
++         if (boundary_condition /= 'no_slip' .and. boundary_condition /= 'free_slip') then
++            if (my_task == master_task) then
++               write(nu_diag,*) subname//' ERROR: invalid HORIZONTAL boundary condition/scheme'
++               write(nu_diag,*) subname//' ERROR: boundary_condition should be either no_slip or free_slip'
++            endif
++            abort_list = trim(abort_list)//":44"
++         endif
+          if (kdyn > 1 .or. (kdyn == 1 .and. evp_algorithm /= 'standard_2d')) then
+             if (my_task == master_task) then
+               write(nu_diag,*) subname//' ERROR: grid_ice = C | CD only supported with kdyn=1 and evp_algorithm=standard_2d'
+@@ -2064,6 +2090,9 @@ subroutine input_data
+          write(nu_diag,1003) ' dyn_mass_min     = ', dyn_mass_min,' : min ice mass to activate dynamics (kg/m2)'
+          if (kdyn >= 1) then
+             if (kdyn == 1 .or. kdyn == 2) then
++               if (grid_ice == 'C' .or. grid_ice == 'CD') then
++                  write(nu_diag,1030) ' boundary_condition = ', trim(boundary_condition),' : horizontal boundary condition'
++               endif
+                if (revised_evp) then
+                   tmpstr2 = ' : revised EVP formulation used'
+                   write(nu_diag,1002) ' arlx             = ', arlx, ' : stress equation factor alpha'
+diff --git a/cicecore/cicedyn/infrastructure/ice_grid.F90 b/cicecore/cicedyn/infrastructure/ice_grid.F90
+index eb2d224..86ca8a7 100644
+--- a/cicecore/cicedyn/infrastructure/ice_grid.F90
++++ b/cicecore/cicedyn/infrastructure/ice_grid.F90
+@@ -50,7 +50,8 @@ module ice_grid
+       private
+       public :: init_grid1, init_grid2, grid_average_X2Y, makemask, &
+                 alloc_grid, dealloc_grid, &
+-                grid_neighbor_min, grid_neighbor_max
++                grid_neighbor_min, grid_neighbor_max, &
++                build_F2_form_factors_box_grid
+ 
+       character (len=char_len_long), public :: &
+          grid_format  , & ! file format ('bin'=binary or 'pop_nc'= pop netcdf or 'mom_nc'=mom (supergrid) netcdf)
+@@ -174,6 +175,11 @@ module ice_grid
+       character (len=char_len), private :: &
+          mask_fieldname !field/var name for the mask variable (in nc files)
+ 
++      ! coastal drag form factors
++      real(kind=dbl_kind), dimension (:,:,:), allocatable, save, public :: &
++         F2E, & ! coastal drag form factors on E-points 
++         F2N    ! coastal drag form factors on N-points
++
+       interface grid_average_X2Y
+          module procedure grid_average_X2Y_base , &
+                           grid_average_X2Y_userwghts, &
+@@ -2602,6 +2608,91 @@ subroutine rectgrid_scale_dxdy
+ 
+       end subroutine rectgrid_scale_dxdy
+ 
++!-----------------------------------------------------------------------
++! Boundary-only F2 builder for a rectangular C-grid test domain (CICE 6).
++! - F2E(i,j) are E (u) faces at the east side of T-cells (i,j).
++! - F2N(i,j) are N (v) faces at the north side of T-cells (i,j).
++! - Nonzero ONLY on physical boundary lines (one face thick), and which
++!   boundaries are active depends on wind tag adt_in.
++!   * 'uniform_north' or 'uniform_south' -> WEST & EAST active
++!   * 'uniform_west'  or 'uniform_east'  -> SOUTH & NORTH active
++!   * otherwise -> all four active
++! - On any active boundary, set BOTH F2E and F2N > 0 per your spec.
++!-----------------------------------------------------------------------
++      subroutine build_F2_form_factors_box_grid(adt_in)
++         use ice_kinds_mod
++         use ice_blocks       , only: get_block, nx_block, ny_block, block
++         use ice_domain       , only: nblocks, blocks_ice
++         use ice_domain_size  , only: max_blocks
++         use ice_fileunits    , only: nu_diag
++         implicit none
++         character(len=*), intent(in), optional :: adt_in
++
++         real(kind=dbl_kind), parameter :: F2_val = 0.25d0  ! placeholder constant
++         type(block) :: this_block
++         integer(kind=int_kind) :: iblk, i, j, ilo, ihi, jlo, jhi, jmid
++         character(len=32) :: adt
++         logical :: do_NS, do_EW
++
++         if (.not. allocated(F2E)) allocate(F2E(nx_block,ny_block,max_blocks))
++         if (.not. allocated(F2N)) allocate(F2N(nx_block,ny_block,max_blocks))
++         F2E = 0.0d0
++         F2N = 0.0d0
++
++         adt = 'both'
++         if (present(adt_in)) adt = trim(adt_in)
++
++         select case (adt)
++         case ('uniform_west','uniform_east')
++            do_NS = .true. ; do_EW = .false.     ! activate SOUTH & NORTH
++         case ('uniform_north','uniform_south')
++            do_NS = .false.; do_EW = .true.      ! activate WEST  & EAST
++         case default
++            do_NS = .true. ; do_EW = .true.
++         end select
++
++         write(nu_diag,'(a,a,2(a,l1))') 'build_F2(boundary-only): adt=',trim(adt),'  NS=',do_NS,'  EW=',do_EW
++
++         do iblk = 1, nblocks
++            this_block = get_block(blocks_ice(iblk), iblk)
++            ilo = this_block%ilo;  ihi = this_block%ihi
++            jlo = this_block%jlo;  jhi = this_block%jhi
++            jmid = (jlo + jhi)/2
++
++            ! ---- WEST/EAST boundaries (vertical sides) ----
++            if (do_EW) then
++               ! WEST boundary column: i = ilo
++               do j = jlo, jhi
++                  F2E(ilo, j, iblk) = F2_val   ! E-face on the west boundary column
++                  F2N(ilo, j, iblk) = F2_val   ! N-face belonging to that boundary column cell
++               end do
++               ! EAST boundary column: i = ihi
++               do j = jlo, jhi
++                  F2E(ihi, j, iblk) = F2_val
++                  F2N(ihi, j, iblk) = F2_val
++               end do
++            end if
++
++            ! ---- SOUTH/NORTH boundaries (horizontal sides) ----
++            if (do_NS) then
++               ! SOUTH boundary row: j = jlo
++               do i = ilo, ihi
++               F2E(i, jlo, iblk) = F2_val    ! E-face belonging to the south boundary row cell
++               F2N(i, jlo, iblk) = F2_val    ! N-face on the south boundary row
++               end do
++               ! NORTH boundary row: j = jhi
++               do i = ilo, ihi
++               F2E(i, jhi, iblk) = F2_val
++               F2N(i, jhi, iblk) = F2_val
++               end do
++            end if
++         end do
++
++         write(nu_diag,'(a,2es12.4,a,2es12.4)') 'build_F2: F2E(min,max)=', minval(F2E), maxval(F2E), &
++                                                '  F2N(min,max)=', minval(F2N), maxval(F2N)
++         write(nu_diag,'(a,i10,a,i10)') 'build_F2: active faces:  E=', count(F2E>0.0d0), '  N=', count(F2N>0.0d0)
++      end subroutine build_F2_form_factors_box_grid
++
+ !=======================================================================
+       ! Complex land mask for testing box cases
+       ! Requires nx_global, ny_global > 20
+-- 
+2.43.7
+

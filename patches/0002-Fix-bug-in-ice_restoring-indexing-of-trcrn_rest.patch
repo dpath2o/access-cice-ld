@@ -1,0 +1,37 @@
+From 2d415c4096dbb42d3398d6cbb44c572c9f83144b Mon Sep 17 00:00:00 2001
+From: Tony Craig <apcraig@users.noreply.github.com>
+Date: Tue, 7 Oct 2025 09:14:56 -0700
+Subject: [PATCH 02/34] Fix bug in ice_restoring, indexing of trcrn_rest
+
+Fix bug in ice_restoring with respect to indexing of trcrn_rest. This will change answers when ice restoring is turned on.
+
+The CICE restoring feature is not generally used, and we currently have no tests to cover that feature. This bug was discovered as part of an ongoing effort to improve regional grid capability with additional PRs to come in the future. A full test suite run on derecho with the intel compiler confirmed this, no answers changed.
+---
+ cicecore/cicedyn/infrastructure/ice_restoring.F90 | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/cicecore/cicedyn/infrastructure/ice_restoring.F90 b/cicecore/cicedyn/infrastructure/ice_restoring.F90
+index b7f1b39..71c236a 100644
+--- a/cicecore/cicedyn/infrastructure/ice_restoring.F90
++++ b/cicecore/cicedyn/infrastructure/ice_restoring.F90
+@@ -215,7 +215,7 @@ subroutine ice_HaloRestore_init
+                vicen_rest(i,j,n,iblk) = vicen(i,jlo,n,iblk)
+                vsnon_rest(i,j,n,iblk) = vsnon(i,jlo,n,iblk)
+                do nt = 1, ntrcr
+-                  trcrn_rest(i,j,nt,n,iblk) = trcrn(ilo,j,nt,n,iblk)
++                  trcrn_rest(i,j,nt,n,iblk) = trcrn(i,jlo,nt,n,iblk)
+                enddo
+             enddo
+             enddo
+@@ -246,7 +246,7 @@ subroutine ice_HaloRestore_init
+                vicen_rest(i,j,n,iblk) = vicen(i,jhi,n,iblk)
+                vsnon_rest(i,j,n,iblk) = vsnon(i,jhi,n,iblk)
+                do nt = 1, ntrcr
+-                  trcrn_rest(i,j,nt,n,iblk) = trcrn(ihi,j,nt,n,iblk)
++                  trcrn_rest(i,j,nt,n,iblk) = trcrn(i,jhi,nt,n,iblk)
+                enddo
+             enddo
+             enddo
+-- 
+2.43.7
+

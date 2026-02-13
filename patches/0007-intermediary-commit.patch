@@ -1,0 +1,129 @@
+From 1f0f1cb924b1a38461d0cde6e314fe3fa53026df Mon Sep 17 00:00:00 2001
+From: dpath2o <dpath2o@mac.com>
+Date: Wed, 22 Oct 2025 07:32:16 +1100
+Subject: [PATCH 07/34] intermediary commit
+
+---
+ cicecore/cicedyn/analysis/ice_history.F90    |  9 ++++-----
+ cicecore/cicedyn/dynamics/ice_dyn_evp.F90    | 19 ++++---------------
+ cicecore/cicedyn/dynamics/ice_dyn_shared.F90 |  6 +++---
+ 3 files changed, 11 insertions(+), 23 deletions(-)
+
+diff --git a/cicecore/cicedyn/analysis/ice_history.F90 b/cicecore/cicedyn/analysis/ice_history.F90
+index 3d0cd5e..46a39cf 100644
+--- a/cicecore/cicedyn/analysis/ice_history.F90
++++ b/cicecore/cicedyn/analysis/ice_history.F90
+@@ -67,7 +67,7 @@ subroutine init_hist (dt)
+       use ice_calendar, only: yday, days_per_year, histfreq, &
+           histfreq_n, nstreams
+       use ice_domain_size, only: max_blocks, max_nstrm, nilyr, nslyr, nblyr, ncat, nfsd
+-      use ice_dyn_shared, only: kdyn
++      use ice_dyn_shared, only: kdyn, shearU
+       use ice_flux, only: mlt_onset, frz_onset, albcnt, snwcnt
+       use ice_grid, only: grid_ice, grid_outfile, &
+           grid_atm_thrm, grid_atm_dynu, grid_atm_dynv, &
+@@ -1368,7 +1368,7 @@ subroutine init_hist (dt)
+         !     "coastal drag form factor (unitless)", &
+         !     "static; E-face on C-grid", c1, c0, ns1, f_F2E)
+ 
+-         call define_hist_field(n_shearU,"shearU","%/day",tstr2D, tcstr, &
++         call define_hist_field(n_shearU,"shearU","%/day",ustr2D, ucstr, &
+              "strain rate (shear) at U-points",                         &
+              "shear is instantaneous, on U-grid", secday*c100, c0,      &
+              ns1, f_shearU)
+@@ -2206,14 +2206,13 @@ subroutine accum_hist (dt)
+       use ice_blocks, only: block, get_block, nx_block, ny_block
+       use ice_domain, only: blocks_ice, nblocks
+       use ice_domain_size, only: nfsd
+-      use ice_grid, only: tmask, lmask_n, lmask_s, dxU, dyU, grid_ice, & !dpath2o: F2E, F2N
++      use ice_grid, only: tmask, lmask_n, lmask_s, dxU, dyU, grid_ice!, & !dpath2o: F2E, F2N
+       use ice_calendar, only: new_year, write_history, &
+                               write_ic, timesecs, histfreq, nstreams, mmonth, &
+                               new_month
+       use ice_dyn_eap, only: a11, a12, e11, e12, e22, s11, s12, s22, &
+           yieldstress11, yieldstress12, yieldstress22
+       use ice_dyn_shared, only: kdyn, principal_stress
+-      use ice_dyn_evp, only: shearU
+       use ice_flux, only: fsw, flw, fsnow, frain, sst, sss, uocn, vocn, &
+           frzmlt_init, scale_factor, fswabs, fswthru, alvdr, alvdf, alidr, alidf, &
+           albice, albsno, albpnd, coszen, flat, fsens, flwout, evap, evaps, evapi, &
+@@ -4136,7 +4135,7 @@ subroutine accum_hist (dt)
+                        shear(i,j,iblk)*avail_hist_fields(n_shear(ns))%cona
+                  ! dpath2o
+                  if (n_shearU   (ns) /= 0) a2D(i,j,n_shearU(ns),iblk)     = &
+-                       shear(i,j,iblk)*avail_hist_fields(n_shearU(ns))%cona
++                       shearU(i,j,iblk)*avail_hist_fields(n_shearU(ns))%cona
+                  if (n_vort     (ns) /= 0) a2D(i,j,n_vort(ns),iblk)      = &
+                        vort(i,j,iblk)*avail_hist_fields(n_vort(ns))%cona
+                  if (n_sig1     (ns) /= 0) a2D(i,j,n_sig1(ns),iblk)      = &
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90 b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+index a85cd57..49560e3 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_evp.F90
+@@ -94,7 +94,7 @@ module ice_dyn_evp
+          strengthU(:,:,:) , & ! strength averaged to U points
+          divergU  (:,:,:) , & ! div array on U points, differentiate from divu
+          tensionU (:,:,:) , & ! tension array on U points
+-         shearU   (:,:,:) , & ! shear array on U points
++         !shearU   (:,:,:) , & ! shear array on U points
+          deltaU   (:,:,:) , & ! delta array on U points
+          zetax2T  (:,:,:) , & ! zetax2 = 2*zeta (bulk viscosity)
+          zetax2U  (:,:,:) , & ! zetax2T averaged to U points
+@@ -115,6 +115,9 @@ module ice_dyn_evp
+          umass    (:,:,:) , & ! total mass of ice and snow (u grid)
+          umassdti (:,:,:)     ! mass of U-cell/dte (kg/m^2 s)
+ 
++      real(kind=dbl_kind), allocatable, public :: &
++         shearU(:,:,:) ! shear array on U points
++
+       public :: evp, init_evp
+ 
+ !=======================================================================
+@@ -954,20 +957,6 @@ subroutine evp (dt)
+                !                      divergU (:,:,iblk), tensionU (:,:,iblk), &
+                !                      shearU  (:,:,iblk), deltaU   (:,:,iblk), &
+                !                      ksub              , ndte                 )
+-               ! call strain_rates_U_free_slip_noratio (nx_block          , ny_block           , &
+-               !                      icellU      (iblk),                      &
+-               !                      indxUi    (:,iblk), indxUj     (:,iblk), &
+-               !                      uvelE   (:,:,iblk), vvelE    (:,:,iblk), &
+-               !                      uvelN   (:,:,iblk), vvelN    (:,:,iblk), &
+-               !                      uvel    (:,:,iblk), vvel     (:,:,iblk), &
+-               !                      dxE     (:,:,iblk), dyN      (:,:,iblk), &
+-               !                      dxU     (:,:,iblk), dyU      (:,:,iblk), &
+-               !                      ratiodxN(:,:,iblk), ratiodxNr(:,:,iblk), &
+-               !                      ratiodyE(:,:,iblk), ratiodyEr(:,:,iblk), &
+-               !                      epm     (:,:,iblk), npm      (:,:,iblk), &
+-               !                      divergU (:,:,iblk), tensionU (:,:,iblk), &
+-               !                      shearU  (:,:,iblk), deltaU   (:,:,iblk), &
+-               !                      ksub              , ndte                 )
+                call strain_rates_U (nx_block          , ny_block           , &
+                                     icellU      (iblk),                      &
+                                     indxUi    (:,iblk), indxUj     (:,iblk), &
+diff --git a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90 b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+index 580cdfd..6c12254 100644
+--- a/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
++++ b/cicecore/cicedyn/dynamics/ice_dyn_shared.F90
+@@ -2296,7 +2296,7 @@ subroutine strain_rates_U (nx_block,   ny_block,  &
+          nx_block, ny_block, & ! block dimensions
+          icellU
+ 
+-      integer (kind=int_kind), intent(in) :: ksub, ndte
++      integer(kind=int_kind), intent(in), optional :: ksub, ndte
+ 
+       integer (kind=int_kind), dimension (nx_block*ny_block), intent(in) :: &
+          indxUi   , & ! compressed index in i-direction
+@@ -2396,8 +2396,8 @@ subroutine strain_rates_U (nx_block,   ny_block,  &
+          do j = 2, ny_block-1
+             do i = 2, nx_block-1
+                ! U(i,j) is “coastal” if any of its four surrounding faces is land
+-               if ( epm(i  ,j  ) == c0 .or. epm(i  ,j-1) == c0 .or. &
+-                    npm(i  ,j  ) == c0 .or. npm(i-1,j  ) == c0 ) then
++                if ( epm(i  ,j  ) == c0 .or. epm(i  ,j-1) == c0 .or. &
++                     npm(i  ,j  ) == c0 .or. npm(i-1,j  ) == c0 ) then
+                   !$OMP CRITICAL (IO_DIAG)
+                   write(nu_diag,'(a,2i6,1p,e16.8)') 'no-slip U-coast shearU  (i,j)=', i, j, shearU(i,j)
+                   !$OMP END CRITICAL (IO_DIAG)
+-- 
+2.43.7
+

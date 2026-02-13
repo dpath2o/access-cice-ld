@@ -1,0 +1,119 @@
+From e8c260d00a46d83701374494e76e4687bf191df9 Mon Sep 17 00:00:00 2001
+From: Anton Steketee <79179784+anton-seaice@users.noreply.github.com>
+Date: Thu, 11 Sep 2025 20:32:44 +1000
+Subject: [PATCH 01/34] NUOPC/CMEPS only: Make datestamps in pointer filenames
+ configurable (#9) (#1031)
+
+This adds support in NUOPC/CMEPS driver for the addition of datestamps to the pointer filenames to be configurable through the nuopc option restart_pointer_append_date .
+
+This is a companion change to ESCOMP/CESM_share#70, and does not impact any current default behaviour.
+
+* Make datestamps in pointer filenames configurable (#9)
+
+* set across all io options consistently
+
+* use ice_restart_shared consistently across all 3 methods
+
+---------
+
+Co-authored-by: Andrew Kiss <31054815+aekiss@users.noreply.github.com>
+Co-authored-by: Dougie Squire <42455466+dougiesquire@users.noreply.github.com>
+---
+ .../infrastructure/io/io_binary/ice_restart.F90    | 13 +++++++++----
+ .../infrastructure/io/io_netcdf/ice_restart.F90    | 14 +++++++++-----
+ .../infrastructure/io/io_pio2/ice_restart.F90      |  2 +-
+ 3 files changed, 19 insertions(+), 10 deletions(-)
+
+diff --git a/cicecore/cicedyn/infrastructure/io/io_binary/ice_restart.F90 b/cicecore/cicedyn/infrastructure/io/io_binary/ice_restart.F90
+index d893186..9ae19f1 100644
+--- a/cicecore/cicedyn/infrastructure/io/io_binary/ice_restart.F90
++++ b/cicecore/cicedyn/infrastructure/io/io_binary/ice_restart.F90
+@@ -9,9 +9,7 @@ module ice_restart
+ 
+       use ice_broadcast
+       use ice_kinds_mod
+-      use ice_restart_shared, only: &
+-          restart, restart_ext, restart_dir, restart_file, pointer_file, &
+-          runid, runtype, use_restart_time, lenstr
++      use ice_restart_shared
+       use ice_communicate, only: my_task, master_task
+       use ice_fileunits, only: nu_diag, nu_rst_pointer
+       use ice_fileunits, only: nu_dump, nu_dump_eap, nu_dump_FY, nu_dump_age
+@@ -396,6 +394,7 @@ subroutine init_restart_write(filename_spec)
+          nbtrcr                  ! number of bgc tracers
+ 
+       character(len=char_len_long) :: filename
++      character(len=char_len_long) :: lpointer_file
+ 
+       character(len=*), parameter :: subname = '(init_restart_write)'
+ 
+@@ -422,7 +421,13 @@ subroutine init_restart_write(filename_spec)
+ 
+       ! write pointer (path/file)
+       if (my_task == master_task) then
+-         open(nu_rst_pointer,file=pointer_file)
++         lpointer_file = pointer_file
++         if (pointer_date) then
++            ! append date to pointer filename
++            write(lpointer_file,'(a,i4.4,a,i2.2,a,i2.2,a,i5.5)') &
++               trim(lpointer_file)//'.',myear,'-',mmonth,'-',mday,'-',msec
++         end if
++         open(nu_rst_pointer,file=lpointer_file)
+          write(nu_rst_pointer,'(a)') filename
+          close(nu_rst_pointer)
+          if (restart_ext) then
+diff --git a/cicecore/cicedyn/infrastructure/io/io_netcdf/ice_restart.F90 b/cicecore/cicedyn/infrastructure/io/io_netcdf/ice_restart.F90
+index 33fd0cd..db6aa80 100644
+--- a/cicecore/cicedyn/infrastructure/io/io_netcdf/ice_restart.F90
++++ b/cicecore/cicedyn/infrastructure/io/io_netcdf/ice_restart.F90
+@@ -16,10 +16,7 @@ module ice_restart
+       use netcdf
+ #endif
+       use ice_read_write, only: ice_check_nc
+-      use ice_restart_shared, only: &
+-          restart_ext, restart_dir, restart_file, pointer_file, &
+-          runid, use_restart_time, lenstr, restart_coszen, restart_format, &
+-          restart_chunksize, restart_deflate
++      use ice_restart_shared
+       use ice_fileunits, only: nu_diag, nu_rst_pointer
+       use ice_exit, only: abort_ice
+       use icepack_intfc, only: icepack_query_parameters
+@@ -168,6 +165,7 @@ subroutine init_restart_write(filename_spec)
+          nbtrcr                  ! number of bgc tracers
+ 
+       character(len=char_len_long) :: filename
++      character(len=char_len_long) :: lpointer_file
+ 
+       integer (kind=int_kind), allocatable :: dims(:)
+ 
+@@ -215,7 +213,13 @@ subroutine init_restart_write(filename_spec)
+       ! write pointer (path/file)
+       if (my_task == master_task) then
+          filename = trim(filename) // '.nc'
+-         open(nu_rst_pointer,file=pointer_file)
++         lpointer_file = pointer_file
++         if (pointer_date) then
++            ! append date to pointer filename
++            write(lpointer_file,'(a,i4.4,a,i2.2,a,i2.2,a,i5.5)') &
++               trim(lpointer_file)//'.',myear,'-',mmonth,'-',mday,'-',msec
++         end if
++         open(nu_rst_pointer,file=lpointer_file)
+          write(nu_rst_pointer,'(a)') filename
+          close(nu_rst_pointer)
+ 
+diff --git a/cicecore/cicedyn/infrastructure/io/io_pio2/ice_restart.F90 b/cicecore/cicedyn/infrastructure/io/io_pio2/ice_restart.F90
+index 6e60838..11f0fb8 100644
+--- a/cicecore/cicedyn/infrastructure/io/io_pio2/ice_restart.F90
++++ b/cicecore/cicedyn/infrastructure/io/io_pio2/ice_restart.F90
+@@ -220,7 +220,7 @@ subroutine init_restart_write(filename_spec)
+                myear,'-',mmonth,'-',mday,'-',msec
+       end if
+ 
+-      if (restart_format(1:3) /= 'bin') filename = trim(filename) // '.nc'
++      filename = trim(filename) // '.nc'
+ 
+       ! write pointer (path/file)
+       if (my_task == master_task) then
+-- 
+2.43.7
+
